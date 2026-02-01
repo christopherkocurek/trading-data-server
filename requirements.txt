@@ -6,6 +6,9 @@ uvicorn>=0.24.0
 pydantic>=2.0.0
 requests>=2.31.0
 
+# Scheduler for autonomous agent
+apscheduler>=3.10.0
+
 # Exchange APIs (optional - uncomment if connecting to exchanges)
 # python-binance>=1.0.19
 # coinbase-advanced-py>=1.0.0

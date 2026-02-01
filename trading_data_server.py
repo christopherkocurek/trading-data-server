@@ -3,28 +3,86 @@ Trading Data Server
 Receives TradingView webhooks and serves data to Claude via MCP
 
 Requirements:
-    pip install fastapi uvicorn requests
+    pip install fastapi uvicorn requests apscheduler
 
 Run locally:
-    uvicorn trading-data-server:app --host 0.0.0.0 --port 8080
+    uvicorn trading_data_server:app --host 0.0.0.0 --port 8080
 
 For production, deploy to Railway, Render, or DigitalOcean.
 """
 
 from fastapi import FastAPI, Request, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import os
+import threading
 
 # Import our modules
 from database import get_database, TradingDatabase
 from signal_detector import get_signal_detector, SignalDetector
 from exchanges import get_exchange_manager, ExchangeManager
 
-app = FastAPI(title="Trading Data Server", version="2.0.0")
+# Scheduler for autonomous agent
+scheduler = None
+
+def run_trading_agent():
+    """Run the trading agent analysis (called by scheduler)."""
+    print(f"\n[{datetime.now(timezone.utc).isoformat()}] Running scheduled trading agent...")
+    try:
+        from trading_agent import run_analysis
+        run_analysis()
+    except Exception as e:
+        print(f"Agent error: {e}")
+
+def start_scheduler():
+    """Start the APScheduler for hourly agent runs."""
+    global scheduler
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from apscheduler.triggers.cron import CronTrigger
+
+        scheduler = BackgroundScheduler()
+
+        # Run at the top of every hour
+        scheduler.add_job(
+            run_trading_agent,
+            CronTrigger(minute=0),  # Every hour at :00
+            id='trading_agent',
+            name='Hourly Trading Analysis',
+            replace_existing=True
+        )
+
+        # Also run once at startup (after 30 seconds to let server initialize)
+        scheduler.add_job(
+            run_trading_agent,
+            'date',
+            run_date=datetime.now(timezone.utc).replace(second=0, microsecond=0),
+            id='trading_agent_startup'
+        )
+
+        scheduler.start()
+        print("Scheduler started - Trading agent will run every hour at :00")
+    except ImportError:
+        print("APScheduler not installed - agent scheduling disabled")
+    except Exception as e:
+        print(f"Scheduler error: {e}")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    print("Starting Trading Data Server...")
+    start_scheduler()
+    yield
+    # Shutdown
+    if scheduler:
+        scheduler.shutdown()
+        print("Scheduler stopped")
+
+app = FastAPI(title="Trading Data Server", version="2.1.0", lifespan=lifespan)
 
 # CORS for local development and KocurekFi
 app.add_middleware(
@@ -476,6 +534,48 @@ async def clear_chat_history():
     """Clear chat history."""
     db.clear_chat_history()
     return {"status": "ok"}
+
+
+@app.post("/api/agent/run")
+async def trigger_agent_run(background_tasks: BackgroundTasks):
+    """Manually trigger an agent analysis run."""
+    background_tasks.add_task(run_trading_agent)
+    return {"status": "started", "message": "Agent analysis triggered"}
+
+
+@app.get("/api/agent/status")
+async def get_agent_status():
+    """Get agent scheduler status."""
+    global scheduler
+
+    status = {
+        "scheduler_running": scheduler is not None and scheduler.running if scheduler else False,
+        "anthropic_key_set": bool(os.getenv("ANTHROPIC_API_KEY")),
+        "next_run": None,
+        "jobs": []
+    }
+
+    if scheduler and scheduler.running:
+        jobs = scheduler.get_jobs()
+        for job in jobs:
+            status["jobs"].append({
+                "id": job.id,
+                "name": job.name,
+                "next_run": job.next_run_time.isoformat() if job.next_run_time else None
+            })
+        if jobs:
+            status["next_run"] = min(j.next_run_time for j in jobs if j.next_run_time).isoformat()
+
+    # Get latest analysis
+    latest = db.get_latest_agent_analysis()
+    if latest:
+        status["last_analysis"] = {
+            "time": latest.get("created_at"),
+            "bias": latest.get("bias"),
+            "confidence": latest.get("confidence")
+        }
+
+    return status
 
 
 # ============================================
