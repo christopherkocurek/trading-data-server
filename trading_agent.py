@@ -166,7 +166,12 @@ def fetch_binance_klines(symbol: str = "BTCUSDT", interval: str = "1d", limit: i
             params={"symbol": symbol, "interval": interval, "limit": limit},
             timeout=10
         )
-        return resp.json()
+        result = resp.json()
+        # Check if it's a valid list of klines (not an error dict)
+        if isinstance(result, list) and len(result) > 0 and isinstance(result[0], list):
+            return result
+        print(f"Binance returned unexpected format: {str(result)[:200]}")
+        return []
     except Exception as e:
         print(f"Error fetching Binance klines: {e}")
         return []
@@ -176,34 +181,42 @@ def fetch_technical_indicators() -> Dict:
     """Calculate technical indicators from Binance klines."""
     data = {}
 
-    klines = fetch_binance_klines()
-    if not klines:
-        return data
+    try:
+        klines = fetch_binance_klines()
+        if not klines:
+            print("No klines data available")
+            return data
 
-    closes = [float(k[4]) for k in klines]  # Close prices
+        closes = [float(k[4]) for k in klines]  # Close prices
+        if not closes:
+            return data
 
-    # RSI
-    rsi = calculate_rsi(closes)
-    if rsi:
-        data["rsi"] = round(rsi, 1)
+        # RSI
+        rsi = calculate_rsi(closes)
+        if rsi:
+            data["rsi"] = round(rsi, 1)
 
-    # MACD
-    macd = calculate_macd(closes)
-    data.update(macd)
+        # MACD
+        macd = calculate_macd(closes)
+        data.update(macd)
 
-    # 200 MA
-    if len(closes) >= 200:
-        data["ma_200"] = round(sum(closes[-200:]) / 200, 2)
+        # 200 MA
+        if len(closes) >= 200:
+            data["ma_200"] = round(sum(closes[-200:]) / 200, 2)
 
-    # 50 MA for additional context
-    if len(closes) >= 50:
-        data["ma_50"] = round(sum(closes[-50:]) / 50, 2)
+        # 50 MA for additional context
+        if len(closes) >= 50:
+            data["ma_50"] = round(sum(closes[-50:]) / 50, 2)
 
-    # Price relative to MAs
-    current_price = closes[-1]
-    if data.get("ma_200"):
-        data["above_200ma"] = current_price > data["ma_200"]
-        data["pct_from_200ma"] = round((current_price / data["ma_200"] - 1) * 100, 1)
+        # Price relative to MAs
+        if closes:
+            current_price = closes[-1]
+            if data.get("ma_200"):
+                data["above_200ma"] = current_price > data["ma_200"]
+                data["pct_from_200ma"] = round((current_price / data["ma_200"] - 1) * 100, 1)
+
+    except Exception as e:
+        print(f"Error calculating technical indicators: {e}")
 
     return data
 
@@ -333,9 +346,13 @@ def fetch_market_data() -> Dict:
     # Fear & Greed Index
     try:
         resp = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
-        fng = resp.json().get("data", [{}])[0]
-        data["fear_greed"] = int(fng.get("value", 0))
-        data["fear_greed_label"] = fng.get("value_classification", "Unknown")
+        fng_data = resp.json()
+        if isinstance(fng_data, dict) and "data" in fng_data:
+            fng_list = fng_data.get("data", [])
+            if isinstance(fng_list, list) and len(fng_list) > 0:
+                fng = fng_list[0]
+                data["fear_greed"] = int(fng.get("value", 0))
+                data["fear_greed_label"] = fng.get("value_classification", "Unknown")
     except Exception as e:
         print(f"Error fetching Fear & Greed: {e}")
 
@@ -347,7 +364,7 @@ def fetch_market_data() -> Dict:
             timeout=10
         )
         funding = resp.json()
-        if funding:
+        if isinstance(funding, list) and len(funding) > 0 and isinstance(funding[0], dict):
             rate = float(funding[0].get("fundingRate", 0))
             data["funding_rate"] = rate * 100
             data["funding_annualized"] = rate * 3 * 365 * 100
@@ -361,7 +378,9 @@ def fetch_market_data() -> Dict:
             params={"symbol": "BTCUSDT"},
             timeout=10
         )
-        data["open_interest"] = float(resp.json().get("openInterest", 0))
+        oi_data = resp.json()
+        if isinstance(oi_data, dict) and "openInterest" in oi_data:
+            data["open_interest"] = float(oi_data.get("openInterest", 0))
     except Exception as e:
         print(f"Error fetching OI: {e}")
 
@@ -373,7 +392,7 @@ def fetch_market_data() -> Dict:
             timeout=10
         )
         ls = resp.json()
-        if ls:
+        if isinstance(ls, list) and len(ls) > 0 and isinstance(ls[0], dict):
             ratio = float(ls[0].get("longShortRatio", 1))
             data["long_pct"] = ratio / (1 + ratio) * 100
             data["short_pct"] = 100 - data["long_pct"]
