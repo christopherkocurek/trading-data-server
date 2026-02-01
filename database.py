@@ -139,6 +139,37 @@ class TradingDatabase:
                 )
             """)
 
+            # Agent analysis logs - autonomous trading analyst thoughts
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS agent_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    log_type TEXT NOT NULL DEFAULT 'analysis',
+                    symbol TEXT DEFAULT 'BTCUSD',
+                    title TEXT,
+                    content TEXT NOT NULL,
+                    market_data TEXT,
+                    sentiment TEXT,
+                    bias TEXT,
+                    confidence REAL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_agent_logs_time
+                ON agent_logs(created_at DESC)
+            """)
+
+            # Agent chat history
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS agent_chats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
     # ==========================================
     # INDICATOR METHODS
     # ==========================================
@@ -457,6 +488,98 @@ class TradingDatabase:
             """, (cutoff.isoformat(),))
 
             return cursor.rowcount
+
+    # ==========================================
+    # AGENT LOG METHODS
+    # ==========================================
+
+    def save_agent_log(self, content: str, log_type: str = 'analysis',
+                       symbol: str = 'BTCUSD', title: str = None,
+                       market_data: Dict = None, sentiment: str = None,
+                       bias: str = None, confidence: float = None) -> int:
+        """Save an agent analysis log entry."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO agent_logs
+                (log_type, symbol, title, content, market_data, sentiment, bias, confidence)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                log_type, symbol, title, content,
+                json.dumps(market_data) if market_data else None,
+                sentiment, bias, confidence
+            ))
+            return cursor.lastrowid
+
+    def get_agent_logs(self, limit: int = 20, log_type: str = None,
+                       hours: int = None) -> List[Dict]:
+        """Get recent agent logs."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            query = "SELECT * FROM agent_logs WHERE 1=1"
+            params = []
+
+            if log_type:
+                query += " AND log_type = ?"
+                params.append(log_type)
+
+            if hours:
+                since = datetime.utcnow() - timedelta(hours=hours)
+                query += " AND created_at > ?"
+                params.append(since.isoformat())
+
+            query += " ORDER BY created_at DESC LIMIT ?"
+            params.append(limit)
+
+            cursor.execute(query, params)
+
+            logs = []
+            for row in cursor.fetchall():
+                log = dict(row)
+                if log.get('market_data'):
+                    log['market_data'] = json.loads(log['market_data'])
+                logs.append(log)
+
+            return logs
+
+    def get_latest_agent_analysis(self, symbol: str = 'BTCUSD') -> Optional[Dict]:
+        """Get the most recent agent analysis."""
+        logs = self.get_agent_logs(limit=1, log_type='analysis')
+        return logs[0] if logs else None
+
+    # ==========================================
+    # AGENT CHAT METHODS
+    # ==========================================
+
+    def save_chat_message(self, role: str, content: str) -> int:
+        """Save a chat message."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO agent_chats (role, content)
+                VALUES (?, ?)
+            """, (role, content))
+            return cursor.lastrowid
+
+    def get_chat_history(self, limit: int = 50) -> List[Dict]:
+        """Get recent chat history."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM agent_chats
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, (limit,))
+
+            # Reverse to get chronological order
+            return [dict(row) for row in cursor.fetchall()][::-1]
+
+    def clear_chat_history(self):
+        """Clear all chat history."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM agent_chats")
 
 
 # Singleton instance

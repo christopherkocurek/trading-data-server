@@ -328,6 +328,157 @@ async def mcp_tools():
 
 
 # ============================================
+# AGENT LOGS & CHAT
+# ============================================
+
+class AgentLogRequest(BaseModel):
+    content: str
+    log_type: str = "analysis"
+    symbol: str = "BTCUSD"
+    title: str = None
+    market_data: Dict = None
+    sentiment: str = None
+    bias: str = None
+    confidence: float = None
+
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+@app.post("/api/agent/log")
+async def post_agent_log(log: AgentLogRequest):
+    """Save an agent analysis log."""
+    log_id = db.save_agent_log(
+        content=log.content,
+        log_type=log.log_type,
+        symbol=log.symbol,
+        title=log.title,
+        market_data=log.market_data,
+        sentiment=log.sentiment,
+        bias=log.bias,
+        confidence=log.confidence
+    )
+    return {"status": "ok", "log_id": log_id}
+
+
+@app.get("/api/agent/logs")
+async def get_agent_logs(
+    limit: int = Query(default=20, ge=1, le=100),
+    log_type: str = Query(default=None),
+    hours: int = Query(default=None, ge=1, le=168)
+):
+    """Get agent analysis logs."""
+    logs = db.get_agent_logs(limit=limit, log_type=log_type, hours=hours)
+    return {"logs": logs}
+
+
+@app.get("/api/agent/latest")
+async def get_latest_analysis():
+    """Get the most recent agent analysis."""
+    analysis = db.get_latest_agent_analysis()
+    return {"analysis": analysis}
+
+
+@app.post("/api/agent/chat")
+async def chat_with_agent(chat: ChatRequest):
+    """Chat with the trading agent."""
+    import os
+    import requests as req
+
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+
+    if not ANTHROPIC_API_KEY:
+        return {"error": "ANTHROPIC_API_KEY not configured", "response": None}
+
+    # Save user message
+    db.save_chat_message("user", chat.message)
+
+    # Get context: recent logs and chat history
+    recent_logs = db.get_agent_logs(limit=5, log_type='analysis')
+    chat_history = db.get_chat_history(limit=20)
+
+    # Get current market data
+    summary = db.get_summary("BTCUSD")
+
+    # Build system prompt
+    system = """You are an expert BTC trading analyst. You run hourly analyses and maintain a trading journal.
+The user is consulting with you about the market. Use your recent analyses for context.
+Be direct, specific, and actionable. Reference the trading-expert framework rules when relevant."""
+
+    # Build messages
+    messages = []
+
+    # Add context about recent analyses
+    if recent_logs:
+        context = "Your recent analyses:\n"
+        for log in recent_logs[-3:]:
+            context += f"\n[{log.get('created_at', '')}] Bias: {log.get('bias', 'N/A')}\n"
+            context += log.get('content', '')[:500] + "...\n"
+        messages.append({"role": "user", "content": f"[CONTEXT - Recent Analyses]\n{context}"})
+        messages.append({"role": "assistant", "content": "I have my recent analyses loaded for context."})
+
+    # Add chat history
+    for msg in chat_history[-10:]:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+
+    # Add current message with market data
+    current_msg = f"""Current market snapshot:
+- BTC: ${summary.get('price', 'N/A'):,.0f}
+- RSI: {summary.get('indicators', {}).get('rsi_daily', 'N/A')}
+- Above 200 MA: {summary.get('indicators', {}).get('above_200ma', 'N/A')}
+
+User question: {chat.message}"""
+
+    messages.append({"role": "user", "content": current_msg})
+
+    try:
+        resp = req.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 1024,
+                "system": system,
+                "messages": messages
+            },
+            timeout=60
+        )
+
+        if resp.status_code == 200:
+            result = resp.json()
+            response_text = result.get("content", [{}])[0].get("text", "")
+
+            # Save assistant response
+            db.save_chat_message("assistant", response_text)
+
+            return {"response": response_text}
+        else:
+            return {"error": f"API error: {resp.status_code}", "response": None}
+
+    except Exception as e:
+        return {"error": str(e), "response": None}
+
+
+@app.get("/api/agent/chat/history")
+async def get_chat_history(limit: int = Query(default=50, ge=1, le=200)):
+    """Get chat history."""
+    history = db.get_chat_history(limit=limit)
+    return {"history": history}
+
+
+@app.delete("/api/agent/chat/clear")
+async def clear_chat_history():
+    """Clear chat history."""
+    db.clear_chat_history()
+    return {"status": "ok"}
+
+
+# ============================================
 # MAINTENANCE
 # ============================================
 
