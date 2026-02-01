@@ -135,17 +135,31 @@ def analyze_with_claude(market_data: Dict, recent_logs: list) -> Optional[Dict]:
         for log in recent_logs[-3:]:
             context += f"\n[{log.get('created_at', 'Unknown')}]\n{log.get('content', '')[:500]}...\n"
 
+    # Safely format numeric values for prompt
+    def fmt_price(val): return f"${val:,.0f}" if val else "N/A"
+    def fmt_pct(val): return f"{val:.1f}%" if val is not None else "N/A"
+    def fmt_num(val): return f"{val:,.0f}" if val else "N/A"
+
+    price = market_data.get('price')
+    change = market_data.get('change_24h', 0) or 0
+    funding = market_data.get('funding_rate')
+    funding_ann = market_data.get('funding_annualized')
+    oi = market_data.get('open_interest')
+    long_pct = market_data.get('long_pct')
+    short_pct = market_data.get('short_pct')
+    ma_200 = market_data.get('ma_200')
+
     # Build the prompt
     prompt = f"""You are an autonomous BTC trading analyst running every hour. Analyze the current market and provide your thoughts.
 
 ## Current Market Data:
-- BTC Price: ${market_data.get('price', 'N/A'):,.0f} ({market_data.get('change_24h', 0):+.2f}% 24h)
+- BTC Price: {fmt_price(price)} ({change:+.2f}% 24h)
 - Fear & Greed: {market_data.get('fear_greed', 'N/A')} ({market_data.get('fear_greed_label', 'Unknown')})
-- Funding Rate: {market_data.get('funding_rate', 'N/A'):.4f}% (Annualized: {market_data.get('funding_annualized', 'N/A'):.1f}%)
-- Open Interest: {market_data.get('open_interest', 'N/A'):,.0f} BTC
-- Long/Short: {market_data.get('long_pct', 'N/A'):.1f}% Long / {market_data.get('short_pct', 'N/A'):.1f}% Short
+- Funding Rate: {f'{funding:.4f}%' if funding is not None else 'N/A'} (Annualized: {f'{funding_ann:.1f}%' if funding_ann is not None else 'N/A'})
+- Open Interest: {fmt_num(oi)} BTC
+- Long/Short: {fmt_pct(long_pct)} Long / {fmt_pct(short_pct)} Short
 - RSI (Daily): {market_data.get('rsi', 'N/A')}
-- 200 MA: ${market_data.get('ma_200', 'N/A'):,.0f}
+- 200 MA: {fmt_price(ma_200)}
 - MACD: Line {market_data.get('macd_line', 'N/A')}, Signal {market_data.get('macd_signal', 'N/A')}, Histogram {market_data.get('macd_histogram', 'N/A')}
 {context}
 
@@ -297,7 +311,9 @@ def run_analysis():
     # Fetch market data
     print("Fetching market data...")
     market_data = fetch_market_data()
-    print(f"Price: ${market_data.get('price', 'N/A'):,.0f}")
+    price = market_data.get('price')
+    price_str = f"${price:,.0f}" if price else "N/A"
+    print(f"Price: {price_str}")
     print(f"Fear & Greed: {market_data.get('fear_greed', 'N/A')}")
 
     # Get recent logs for context
