@@ -1,0 +1,115 @@
+//@version=5
+// ============================================
+// TRADING EXPERT - INDICATOR BROADCASTER
+// Sends indicator values to your server via webhooks
+// ============================================
+//
+// SETUP INSTRUCTIONS:
+// 1. Add this indicator to your BTCUSD chart
+// 2. Create an alert on this indicator
+// 3. Set webhook URL to: https://your-server.com/webhook/tradingview
+// 4. Use the alert message format shown below
+//
+// ============================================
+
+indicator("Trading Expert Broadcaster", overlay=false)
+
+// ============================================
+// INDICATORS
+// ============================================
+
+// RSI
+rsi_length = input.int(14, "RSI Length")
+rsi_value = ta.rsi(close, rsi_length)
+
+// MACD
+[macd_line, macd_signal, macd_hist] = ta.macd(close, 12, 26, 9)
+
+// Moving Averages
+ma_200 = ta.sma(close, 200)
+above_200ma = close > ma_200
+
+// ATR
+atr_value = ta.atr(14)
+
+// Bollinger Bands
+[bb_middle, bb_upper, bb_lower] = ta.bb(close, 20, 2)
+
+// Volume vs 20-day average
+vol_avg = ta.sma(volume, 20)
+vol_ratio = volume / vol_avg
+
+// ============================================
+// PLOT (for visual reference)
+// ============================================
+
+plot(rsi_value, "RSI", color=color.blue)
+hline(70, "Overbought", color=color.red)
+hline(30, "Oversold", color=color.green)
+
+// ============================================
+// ALERT CONDITIONS
+// ============================================
+
+// Periodic update (fires every bar to keep data fresh)
+periodic_update = barstate.isconfirmed
+
+// You can also set specific condition alerts:
+rsi_overbought = ta.crossover(rsi_value, 70)
+rsi_oversold = ta.crossunder(rsi_value, 30)
+price_cross_200ma_up = ta.crossover(close, ma_200)
+price_cross_200ma_down = ta.crossunder(close, ma_200)
+
+// ============================================
+// ALERT MESSAGES (Copy these for your alerts)
+// ============================================
+
+// For RSI alert, use this message:
+// {"symbol":"BTCUSD","indicator":"RSI","value":{{plot_0}},"timeframe":"{{interval}}","secret":"your-secret"}
+
+// For MACD alert (manual setup), use:
+// {"symbol":"BTCUSD","indicator":"MACD","value":MACD_LINE_VALUE,"value2":MACD_SIGNAL_VALUE,"value3":MACD_HIST_VALUE,"timeframe":"{{interval}}"}
+
+// For Price alert, use:
+// {"symbol":"BTCUSD","indicator":"PRICE","value":{{close}},"timeframe":"{{interval}}"}
+
+// ============================================
+// ALERTCONDITION SETUP
+// ============================================
+
+alertcondition(periodic_update, title="Periodic Update", message='{"symbol":"BTCUSD","indicator":"RSI","value":' + str.tostring(rsi_value, "#.##") + ',"timeframe":"{{interval}}"}')
+
+alertcondition(rsi_overbought, title="RSI Overbought", message='{"symbol":"BTCUSD","indicator":"RSI","value":' + str.tostring(rsi_value, "#.##") + ',"timeframe":"{{interval}}","alert":"overbought"}')
+
+alertcondition(rsi_oversold, title="RSI Oversold", message='{"symbol":"BTCUSD","indicator":"RSI","value":' + str.tostring(rsi_value, "#.##") + ',"timeframe":"{{interval}}","alert":"oversold"}')
+
+alertcondition(price_cross_200ma_up, title="Price Cross 200MA Up", message='{"symbol":"BTCUSD","indicator":"MA200","value":' + str.tostring(ma_200, "#.##") + ',"timeframe":"{{interval}}","alert":"bullish_cross"}')
+
+alertcondition(price_cross_200ma_down, title="Price Cross 200MA Down", message='{"symbol":"BTCUSD","indicator":"MA200","value":' + str.tostring(ma_200, "#.##") + ',"timeframe":"{{interval}}","alert":"bearish_cross"}')
+
+// ============================================
+// MULTI-INDICATOR BROADCAST (Recommended)
+// Create ONE alert with this message to send all indicators at once
+// ============================================
+
+// Use a script or the webhook endpoint to parse this:
+// Message format for "All Indicators" alert:
+// {
+//   "symbol": "BTCUSD",
+//   "price": {{close}},
+//   "rsi": RSI_VALUE,
+//   "macd_line": MACD_LINE,
+//   "macd_signal": MACD_SIGNAL,
+//   "ma_200": MA_200_VALUE,
+//   "atr": ATR_VALUE,
+//   "volume_ratio": VOL_RATIO,
+//   "timeframe": "{{interval}}"
+// }
+
+// ============================================
+// NOTE: TradingView limitations
+// ============================================
+// - Webhook alerts require TradingView Pro, Pro+, or Premium
+// - Each alert can only send one message format
+// - For multiple indicators, create multiple alerts or use a single "all" alert
+// - Webhooks have rate limits, don't set alerts too frequently
