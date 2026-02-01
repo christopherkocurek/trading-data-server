@@ -162,38 +162,72 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
 
-def fetch_binance_klines(symbol: str = "BTCUSDT", interval: str = "1d", limit: int = 250) -> list:
-    """Fetch kline data from Binance."""
+def fetch_klines(symbol: str = "BTC", limit: int = 250) -> list:
+    """Fetch kline data - tries multiple sources."""
+
+    # Try Binance first
     try:
         resp = requests.get(
             "https://api.binance.com/api/v3/klines",
-            params={"symbol": symbol, "interval": interval, "limit": limit},
+            params={"symbol": f"{symbol}USDT", "interval": "1d", "limit": limit},
             headers=HEADERS,
             timeout=10
         )
         result = resp.json()
-        # Check if it's a valid list of klines (not an error dict)
         if isinstance(result, list) and len(result) > 0 and isinstance(result[0], list):
-            return result
-        print(f"Binance klines returned unexpected format: {str(result)[:200]}")
-        return []
+            # Return close prices (index 4)
+            return [float(k[4]) for k in result]
+        print(f"Binance returned: {str(result)[:100]}")
     except Exception as e:
-        print(f"Error fetching Binance klines: {e}")
-        return []
+        print(f"Binance klines error: {e}")
+
+    # Fallback to CryptoCompare
+    try:
+        print("Trying CryptoCompare fallback...")
+        resp = requests.get(
+            "https://min-api.cryptocompare.com/data/v2/histoday",
+            params={"fsym": symbol, "tsym": "USD", "limit": limit},
+            headers=HEADERS,
+            timeout=10
+        )
+        result = resp.json()
+        if result.get("Response") == "Success":
+            data = result.get("Data", {}).get("Data", [])
+            if data:
+                return [float(d["close"]) for d in data if d.get("close")]
+        print(f"CryptoCompare returned: {str(result)[:100]}")
+    except Exception as e:
+        print(f"CryptoCompare error: {e}")
+
+    # Final fallback - use CoinGecko market chart
+    try:
+        print("Trying CoinGecko fallback...")
+        resp = requests.get(
+            "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart",
+            params={"vs_currency": "usd", "days": str(limit)},
+            headers=HEADERS,
+            timeout=15
+        )
+        result = resp.json()
+        if "prices" in result:
+            return [float(p[1]) for p in result["prices"]]
+    except Exception as e:
+        print(f"CoinGecko chart error: {e}")
+
+    return []
 
 
 def fetch_technical_indicators() -> Dict:
-    """Calculate technical indicators from Binance klines."""
+    """Calculate technical indicators from price data."""
     data = {}
 
     try:
-        klines = fetch_binance_klines()
-        if not klines:
-            print("No klines data available")
+        closes = fetch_klines()  # Now returns close prices directly
+        if not closes:
+            print("No price data available for technical indicators")
             return data
 
-        closes = [float(k[4]) for k in klines]  # Close prices
-        if not closes:
+        if len(closes) < 50:
             return data
 
         # RSI
