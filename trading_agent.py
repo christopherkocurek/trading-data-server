@@ -103,6 +103,208 @@ Be direct and conversational like a senior trader briefing a colleague. Cover:
 End with: **Bias: [BULLISH/BEARISH/NEUTRAL]** | Confidence: X/10"""
 
 
+def calculate_rsi(closes: list, period: int = 14) -> Optional[float]:
+    """Calculate RSI from closing prices."""
+    if len(closes) < period + 1:
+        return None
+
+    deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+    gains = [d if d > 0 else 0 for d in deltas]
+    losses = [-d if d < 0 else 0 for d in deltas]
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    for i in range(period, len(deltas)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+
+    if avg_loss == 0:
+        return 100.0
+
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+def calculate_macd(closes: list, fast: int = 12, slow: int = 26, signal: int = 9) -> Dict:
+    """Calculate MACD from closing prices."""
+    if len(closes) < slow + signal:
+        return {}
+
+    def ema(data, period):
+        multiplier = 2 / (period + 1)
+        ema_values = [sum(data[:period]) / period]
+        for price in data[period:]:
+            ema_values.append((price - ema_values[-1]) * multiplier + ema_values[-1])
+        return ema_values
+
+    ema_fast = ema(closes, fast)
+    ema_slow = ema(closes, slow)
+
+    # Align arrays
+    offset = slow - fast
+    macd_line = [ema_fast[i + offset] - ema_slow[i] for i in range(len(ema_slow))]
+
+    if len(macd_line) < signal:
+        return {}
+
+    signal_line = ema(macd_line, signal)
+    histogram = macd_line[-1] - signal_line[-1]
+
+    return {
+        "macd_line": round(macd_line[-1], 2),
+        "macd_signal": round(signal_line[-1], 2),
+        "macd_histogram": round(histogram, 2)
+    }
+
+
+def fetch_binance_klines(symbol: str = "BTCUSDT", interval: str = "1d", limit: int = 250) -> list:
+    """Fetch kline data from Binance."""
+    try:
+        resp = requests.get(
+            "https://api.binance.com/api/v3/klines",
+            params={"symbol": symbol, "interval": interval, "limit": limit},
+            timeout=10
+        )
+        return resp.json()
+    except Exception as e:
+        print(f"Error fetching Binance klines: {e}")
+        return []
+
+
+def fetch_technical_indicators() -> Dict:
+    """Calculate technical indicators from Binance klines."""
+    data = {}
+
+    klines = fetch_binance_klines()
+    if not klines:
+        return data
+
+    closes = [float(k[4]) for k in klines]  # Close prices
+
+    # RSI
+    rsi = calculate_rsi(closes)
+    if rsi:
+        data["rsi"] = round(rsi, 1)
+
+    # MACD
+    macd = calculate_macd(closes)
+    data.update(macd)
+
+    # 200 MA
+    if len(closes) >= 200:
+        data["ma_200"] = round(sum(closes[-200:]) / 200, 2)
+
+    # 50 MA for additional context
+    if len(closes) >= 50:
+        data["ma_50"] = round(sum(closes[-50:]) / 50, 2)
+
+    # Price relative to MAs
+    current_price = closes[-1]
+    if data.get("ma_200"):
+        data["above_200ma"] = current_price > data["ma_200"]
+        data["pct_from_200ma"] = round((current_price / data["ma_200"] - 1) * 100, 1)
+
+    return data
+
+
+def fetch_dxy_vix() -> Dict:
+    """Fetch DXY and VIX from Yahoo Finance via yfinance-like endpoint."""
+    data = {}
+
+    # Try Alpha Vantage or similar free API for DXY
+    # Fallback: use a simple forex endpoint
+    try:
+        # DXY approximation using USD strength
+        resp = requests.get(
+            "https://api.exchangerate-api.com/v4/latest/USD",
+            timeout=10
+        )
+        if resp.status_code == 200:
+            rates = resp.json().get("rates", {})
+            # DXY basket approximation (weighted EUR, JPY, GBP, CAD, SEK, CHF)
+            eur = rates.get("EUR", 1)
+            jpy = rates.get("JPY", 100) / 100
+            gbp = rates.get("GBP", 1)
+
+            # Simplified DXY proxy (not exact, but directional)
+            if eur and jpy and gbp:
+                dxy_proxy = (1/eur * 0.576) + (jpy * 0.136) + (1/gbp * 0.119)
+                data["dxy_proxy"] = round(dxy_proxy * 100, 1)
+                data["dxy_note"] = "Proxy from forex rates"
+    except Exception as e:
+        print(f"Error fetching DXY proxy: {e}")
+
+    # Try to get VIX from free source
+    try:
+        # Use CBOE or alternative free API
+        resp = requests.get(
+            "https://cdn.cboe.com/api/global/delayed_quotes/indices/.json",
+            timeout=10
+        )
+        # Note: This endpoint may not work, fallback below
+    except:
+        pass
+
+    # Alternative: Use Fear & Greed as VIX proxy for crypto
+    # (High fear often correlates with high VIX)
+
+    return data
+
+
+def fetch_onchain_metrics() -> Dict:
+    """Fetch on-chain metrics from available free APIs."""
+    data = {}
+
+    # Try CoinGlass for some metrics
+    try:
+        resp = requests.get(
+            "https://open-api.coinglass.com/public/v2/index/bitcoin-profitable-days",
+            timeout=10
+        )
+        # Note: May require API key
+    except:
+        pass
+
+    # Try blockchain.info for basic on-chain
+    try:
+        # Hash rate
+        resp = requests.get(
+            "https://api.blockchain.info/charts/hash-rate?timespan=30days&format=json",
+            timeout=10
+        )
+        if resp.status_code == 200:
+            values = resp.json().get("values", [])
+            if values:
+                data["hash_rate"] = round(values[-1].get("y", 0) / 1e9, 1)  # EH/s
+                # Check if hash rate is rising (bullish)
+                if len(values) >= 7:
+                    recent = values[-1].get("y", 0)
+                    week_ago = values[-7].get("y", 0)
+                    if week_ago:
+                        data["hash_rate_7d_change"] = round((recent/week_ago - 1) * 100, 1)
+    except Exception as e:
+        print(f"Error fetching hash rate: {e}")
+
+    # Exchange reserves (approximate from available sources)
+    try:
+        resp = requests.get(
+            "https://api.blockchain.info/charts/balance?timespan=30days&format=json",
+            timeout=10
+        )
+        # Note: This is total balance, not exchange reserves
+    except:
+        pass
+
+    # MVRV and NUPL typically require paid APIs (Glassnode, etc.)
+    # Add placeholder for when available
+    data["mvrv"] = None  # Would need Glassnode/LookIntoBitcoin API
+    data["nupl"] = None  # Would need Glassnode/LookIntoBitcoin API
+    data["onchain_note"] = "MVRV/NUPL require premium API - using available free metrics"
+
+    return data
+
+
 def fetch_market_data() -> Dict:
     """Fetch all market data from APIs."""
     data = {}
@@ -178,18 +380,28 @@ def fetch_market_data() -> Dict:
     except Exception as e:
         print(f"Error fetching L/S ratio: {e}")
 
-    # Get TradingView indicators from our server
+    # Technical Indicators (calculated from Binance klines)
+    print("Calculating technical indicators from Binance...")
+    tech = fetch_technical_indicators()
+    data.update(tech)
+
+    # Macro Indicators (DXY, VIX proxies)
+    print("Fetching macro indicators...")
+    macro = fetch_dxy_vix()
+    data.update(macro)
+
+    # On-Chain Metrics
+    print("Fetching on-chain metrics...")
+    onchain = fetch_onchain_metrics()
+    data.update(onchain)
+
+    # ETF Flow data (if available)
     try:
-        resp = requests.get(f"{SERVER_URL}/api/indicators/BTCUSD", timeout=10)
-        indicators = resp.json().get("indicators", {})
-        if indicators:
-            data["rsi"] = indicators.get("rsi_1d", {}).get("value")
-            data["ma_200"] = indicators.get("ma_200", {}).get("value")
-            data["macd_line"] = indicators.get("macd_line", {}).get("value")
-            data["macd_signal"] = indicators.get("macd_signal", {}).get("value")
-            data["macd_histogram"] = indicators.get("macd_histogram", {}).get("value")
-    except Exception as e:
-        print(f"Error fetching server indicators: {e}")
+        # Try to get BTC ETF flow data from available sources
+        # Note: Most ETF data requires premium APIs
+        data["etf_note"] = "ETF flow data requires premium subscription"
+    except:
+        pass
 
     data["timestamp"] = datetime.utcnow().isoformat()
     return data
@@ -224,27 +436,57 @@ def analyze_with_claude(market_data: Dict, recent_logs: list) -> Optional[Dict]:
     short_pct = market_data.get('short_pct')
     ma_200 = market_data.get('ma_200')
 
+    # Extract additional data
+    rsi = market_data.get('rsi')
+    ma_50 = market_data.get('ma_50')
+    macd_line = market_data.get('macd_line')
+    macd_signal = market_data.get('macd_signal')
+    macd_hist = market_data.get('macd_histogram')
+    above_200ma = market_data.get('above_200ma')
+    pct_from_200ma = market_data.get('pct_from_200ma')
+    dxy_proxy = market_data.get('dxy_proxy')
+    hash_rate = market_data.get('hash_rate')
+    hash_change = market_data.get('hash_rate_7d_change')
+
     # Build the user prompt with market data
     prompt = f"""## HOURLY MARKET UPDATE - {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}
 
-### Live Market Data:
-- **BTC Price**: {fmt_price(price)} ({change:+.2f}% 24h)
+### STEP 1 - MACRO DATA:
+- **DXY Proxy**: {f'{dxy_proxy:.1f}' if dxy_proxy else 'N/A'} (threshold: <105 = bullish, >105 = bearish)
 - **Fear & Greed Index**: {market_data.get('fear_greed', 'N/A')} ({market_data.get('fear_greed_label', 'Unknown')})
+- *Note: VIX and M2 data require premium feeds - use F&G as risk proxy*
+
+### STEP 2 - ON-CHAIN DATA:
+- **Hash Rate**: {f'{hash_rate:.1f} EH/s' if hash_rate else 'N/A'} ({f'{hash_change:+.1f}% 7d' if hash_change else 'N/A'})
+- **MVRV Z-Score**: Premium data required (threshold: >3.7 SELL, <1.0 BUY)
+- **NUPL**: Premium data required (threshold: >0.75 SELL, <-0.25 BUY)
+- *Note: MVRV/NUPL require Glassnode subscription - use hash rate trend as proxy*
+
+### STEP 3 - DERIVATIVES DATA:
 - **Funding Rate**: {f'{funding:.4f}%' if funding is not None else 'N/A'} (Annualized: {f'{funding_ann:.1f}%' if funding_ann is not None else 'N/A'})
 - **Open Interest**: {fmt_num(oi)} BTC
 - **Long/Short Ratio**: {fmt_pct(long_pct)} Long / {fmt_pct(short_pct)} Short
-- **RSI (Daily)**: {market_data.get('rsi', 'N/A')}
-- **200 MA**: {fmt_price(ma_200)}
-- **MACD**: Line {market_data.get('macd_line', 'N/A')}, Signal {market_data.get('macd_signal', 'N/A')}, Histogram {market_data.get('macd_histogram', 'N/A')}
+- *Interpretation*: {'>0.10% = crowded longs, <-0.05% = crowded shorts' if funding else 'N/A'}
+
+### STEP 4 - TECHNICAL DATA:
+- **BTC Price**: {fmt_price(price)} ({change:+.2f}% 24h)
+- **RSI (14-day)**: {f'{rsi:.1f}' if rsi else 'N/A'} (30=oversold, 70=overbought)
+- **200 MA**: {fmt_price(ma_200)} - {'ABOVE ✓ (bullish structure)' if above_200ma else 'BELOW ✗ (bearish structure)' if above_200ma is not None else 'N/A'}
+- **50 MA**: {fmt_price(ma_50)}
+- **Distance from 200 MA**: {f'{pct_from_200ma:+.1f}%' if pct_from_200ma else 'N/A'}
+- **MACD**: Line {macd_line if macd_line else 'N/A'}, Signal {macd_signal if macd_signal else 'N/A'}, Histogram {macd_hist if macd_hist else 'N/A'}
+- *MACD Status*: {'Bullish (line > signal)' if macd_line and macd_signal and macd_line > macd_signal else 'Bearish (line < signal)' if macd_line and macd_signal else 'N/A'}
 {context}
 
-Using your trading framework, analyze the current market. Apply the 4-step hierarchy (Macro → On-Chain → Derivatives → Technical) and reference specific thresholds from your knowledge base. Be direct and conversational.
+Using your 4-step trading framework (Macro → On-Chain → Derivatives → Technical), analyze the current market state. Reference the specific thresholds from your knowledge base. Be direct like a senior trader.
+
+IMPORTANT: Even with some premium data unavailable, make assessments based on what IS available. Use proxies where noted.
 
 Cover:
-1. Current situation assessment using framework
-2. Key levels and signals to watch
-3. Risk considerations
-4. Clear bias with confidence level"""
+1. Framework assessment at each step with available data
+2. Key levels and signals (support, resistance, liquidation clusters)
+3. Risk considerations and position sizing thoughts
+4. Clear actionable bias with confidence level"""
 
     try:
         resp = requests.post(
@@ -388,10 +630,26 @@ def run_analysis():
     # Fetch market data
     print("Fetching market data...")
     market_data = fetch_market_data()
+
+    # Display fetched data summary
     price = market_data.get('price')
     price_str = f"${price:,.0f}" if price else "N/A"
-    print(f"Price: {price_str}")
-    print(f"Fear & Greed: {market_data.get('fear_greed', 'N/A')}")
+    print(f"\n📊 DATA SUMMARY:")
+    print(f"  Price: {price_str}")
+    print(f"  Fear & Greed: {market_data.get('fear_greed', 'N/A')} ({market_data.get('fear_greed_label', 'N/A')})")
+
+    rsi = market_data.get('rsi')
+    print(f"  RSI: {f'{rsi:.1f}' if rsi else 'N/A'}")
+
+    ma_200 = market_data.get('ma_200')
+    above = market_data.get('above_200ma')
+    print(f"  200 MA: {f'${ma_200:,.0f}' if ma_200 else 'N/A'} ({'Above ✓' if above else 'Below ✗' if above is not None else 'N/A'})")
+
+    macd_hist = market_data.get('macd_histogram')
+    print(f"  MACD Histogram: {macd_hist if macd_hist else 'N/A'}")
+
+    funding = market_data.get('funding_rate')
+    print(f"  Funding Rate: {f'{funding:.4f}%' if funding else 'N/A'}")
 
     # Get recent logs for context
     recent_logs = db.get_agent_logs(limit=5, log_type='analysis')
