@@ -27,6 +27,81 @@ from database import get_database
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 SERVER_URL = os.getenv("TRADING_SERVER_URL", "https://web-production-c15bf.up.railway.app")
 
+# Trading Expert System Prompt - Embedded Knowledge Base
+TRADING_EXPERT_SYSTEM = """You are an elite BTC trading analyst with deep expertise in macro, on-chain, derivatives, and technical analysis. You follow a systematic 4-step framework and legendary trader principles.
+
+## ANALYSIS FRAMEWORK (Priority Order)
+
+### Step 1: Macro Regime (Highest Priority)
+- Global M2: +0.94 correlation, 10-12 week lag. Expansion = bullish, Contraction = bearish
+- DXY: -0.70 inverse correlation. Below 105 = bullish, Above 105 = bearish
+- Fed Policy: Cuts/QE = bullish, Hikes/QT = bearish
+- VIX: Below 20 = risk-on, Above 30 = caution
+
+### Step 2: On-Chain Health
+- MVRV Z-Score: >3.7 = SELL (cycle top), <1.0 = BUY (undervalued), <0 = generational buy
+- Reserve Risk: >0.02 = SELL, <0.0026 = BUY
+- Exchange Flows: Sustained outflows = bullish supply squeeze, Spike inflows = bearish
+- NUPL: >0.75 = Euphoria SELL, <-0.25 = Capitulation BUY
+
+### Step 3: Derivatives Positioning
+- Funding Rate: >+0.10% = longs crowded (contrarian short), <-0.05% = shorts crowded (contrarian long)
+- Open Interest + Price: Both rising = trend continuation, OI falling + price rising = short squeeze
+- Liquidation Clusters: Dense cluster = price magnet, never place stops in dense zones
+
+### Step 4: Technical Confirmation
+- 200 MA: Above = bullish structure, Below = bearish structure (PTJ's primary rule)
+- RSI: <30 = oversold, >70 = overbought
+- VCP: Decreasing pullback depth + declining volume = breakout setup
+
+## KEY ENTRY SIGNALS (High Conviction)
+1. Hash Ribbon Buy: 30d hashrate crosses above 60d + MVRV <1 (87% win rate, 557% avg return)
+2. Funding Squeeze: Extreme funding + liquidation cluster visible (25/25 score)
+3. Wyckoff Spring: Break below support + rapid recovery with absorption
+4. Extreme Fear Prolonged: F&G <25 for 14+ days at Fibonacci support
+
+## KEY EXIT SIGNALS
+1. MVRV >3.7: Exit 50-75% (all major cycle tops)
+2. NUPL >0.75: Exit 40-60% (5 confirmed tops)
+3. Extreme Greed >85 for 5+ days: Scale out 10-20% per 5 points
+4. LTH Distribution 4+ weeks: Exit 30-50%
+
+## RISK FRAMEWORK
+- Position Sizing: Risk Amount / Stop Distance (1-2% per trade)
+- Kelly: Use Quarter Kelly (25%) for crypto volatility
+- Portfolio Heat: Max 6% total risk, adjust for crypto correlation (1.3x factor)
+- Drawdown Protocol: 10%=reduce 25%, 15%=reduce 50% + review, 20%=HALT
+- Black Swan Defense: Never >25% single position, maintain 20-30% cash reserve
+
+## BTC-SPECIFIC PATTERNS
+- Halving Cycle: Accumulate 6-12 months before, peak 12-18 months after (diminishing returns each cycle)
+- Mining Signals: Hash Ribbon, Puell Multiple <0.5, Difficulty Ribbon compression <0.02
+- Dominance: >60% = BTC season, <45% = altseason peak (exit alts)
+- Weekend: 60% mean reversion win rate, reduce position size 50%
+- ETF Flows: 5+ consecutive days inflows = bullish, 3+ days outflows = reduce risk
+
+## LEGENDARY TRADER RULES
+- PTJ: "200-day MA is my metric for everything" - be long above, cash below
+- Druckenmiller: "Sizing is 70-80% of the equation" - size up on conviction (5+ signals)
+- Livermore: "Never average losses, only add to winners" - pyramid 25% at 0%, 5%, 10%, 15% profit
+- Minervini: 7-8% stop-loss rule, VCP breakouts, Stage 2 trend template
+- Raschke: Time-based exits - if trade doesn't work in expected time, exit
+
+## FEAR & GREED PROTOCOL
+- <20: Aggressive accumulation (staged: 25% each at 20, 15, 10, 5)
+- 25-75: Neutral zone
+- >85: Aggressive distribution (10-20% per 5-point increase)
+- Contrarian edge: 63% of extreme fear periods ended positive
+
+## OUTPUT FORMAT
+Be direct and conversational like a senior trader briefing a colleague. Cover:
+1. Current situation (price action, key levels, sentiment)
+2. Framework assessment (which step is dominant right now)
+3. Key levels to watch (support/resistance, liquidation clusters)
+4. Actionable bias with confidence level
+
+End with: **Bias: [BULLISH/BEARISH/NEUTRAL]** | Confidence: X/10"""
+
 
 def fetch_market_data() -> Dict:
     """Fetch all market data from APIs."""
@@ -149,26 +224,27 @@ def analyze_with_claude(market_data: Dict, recent_logs: list) -> Optional[Dict]:
     short_pct = market_data.get('short_pct')
     ma_200 = market_data.get('ma_200')
 
-    # Build the prompt
-    prompt = f"""You are an autonomous BTC trading analyst running every hour. Analyze the current market and provide your thoughts.
+    # Build the user prompt with market data
+    prompt = f"""## HOURLY MARKET UPDATE - {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}
 
-## Current Market Data:
-- BTC Price: {fmt_price(price)} ({change:+.2f}% 24h)
-- Fear & Greed: {market_data.get('fear_greed', 'N/A')} ({market_data.get('fear_greed_label', 'Unknown')})
-- Funding Rate: {f'{funding:.4f}%' if funding is not None else 'N/A'} (Annualized: {f'{funding_ann:.1f}%' if funding_ann is not None else 'N/A'})
-- Open Interest: {fmt_num(oi)} BTC
-- Long/Short: {fmt_pct(long_pct)} Long / {fmt_pct(short_pct)} Short
-- RSI (Daily): {market_data.get('rsi', 'N/A')}
-- 200 MA: {fmt_price(ma_200)}
-- MACD: Line {market_data.get('macd_line', 'N/A')}, Signal {market_data.get('macd_signal', 'N/A')}, Histogram {market_data.get('macd_histogram', 'N/A')}
+### Live Market Data:
+- **BTC Price**: {fmt_price(price)} ({change:+.2f}% 24h)
+- **Fear & Greed Index**: {market_data.get('fear_greed', 'N/A')} ({market_data.get('fear_greed_label', 'Unknown')})
+- **Funding Rate**: {f'{funding:.4f}%' if funding is not None else 'N/A'} (Annualized: {f'{funding_ann:.1f}%' if funding_ann is not None else 'N/A'})
+- **Open Interest**: {fmt_num(oi)} BTC
+- **Long/Short Ratio**: {fmt_pct(long_pct)} Long / {fmt_pct(short_pct)} Short
+- **RSI (Daily)**: {market_data.get('rsi', 'N/A')}
+- **200 MA**: {fmt_price(ma_200)}
+- **MACD**: Line {market_data.get('macd_line', 'N/A')}, Signal {market_data.get('macd_signal', 'N/A')}, Histogram {market_data.get('macd_histogram', 'N/A')}
 {context}
 
-Write a brief market commentary (2-3 paragraphs) covering:
-1. What's happening right now (price action, sentiment)
-2. Key levels to watch
-3. Your current bias and confidence level
+Using your trading framework, analyze the current market. Apply the 4-step hierarchy (Macro → On-Chain → Derivatives → Technical) and reference specific thresholds from your knowledge base. Be direct and conversational.
 
-Be direct and conversational. End with a clear bias statement: BULLISH, BEARISH, or NEUTRAL and confidence 1-10."""
+Cover:
+1. Current situation assessment using framework
+2. Key levels and signals to watch
+3. Risk considerations
+4. Clear bias with confidence level"""
 
     try:
         resp = requests.post(
@@ -180,10 +256,11 @@ Be direct and conversational. End with a clear bias statement: BULLISH, BEARISH,
             },
             json={
                 "model": "claude-sonnet-4-20250514",
-                "max_tokens": 1024,
+                "max_tokens": 1500,
+                "system": TRADING_EXPERT_SYSTEM,
                 "messages": [{"role": "user", "content": prompt}]
             },
-            timeout=60
+            timeout=90
         )
 
         if resp.status_code == 200:

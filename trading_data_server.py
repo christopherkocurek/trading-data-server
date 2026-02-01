@@ -459,10 +459,9 @@ async def chat_with_agent(chat: ChatRequest):
     # Get current market data
     summary = db.get_summary("BTCUSD")
 
-    # Build system prompt
-    system = """You are an expert BTC trading analyst. You run hourly analyses and maintain a trading journal.
-The user is consulting with you about the market. Use your recent analyses for context.
-Be direct, specific, and actionable. Reference the trading-expert framework rules when relevant."""
+    # Use the trading expert system prompt
+    from trading_agent import TRADING_EXPERT_SYSTEM
+    system = TRADING_EXPERT_SYSTEM + "\n\nYou are chatting with a trader. Use your recent analyses for context. Be helpful and actionable."
 
     # Build messages
     messages = []
