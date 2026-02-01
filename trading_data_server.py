@@ -604,6 +604,23 @@ async def get_agent_status():
     return status
 
 
+@app.get("/api/debug/fetch-data")
+async def debug_fetch_data():
+    """Debug endpoint to test market data fetching."""
+    try:
+        data = fetch_market_data()
+        return {
+            "status": "success",
+            "data_points": len(data),
+            "data": data
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+
 # ============================================
 # MAINTENANCE
 # ============================================
