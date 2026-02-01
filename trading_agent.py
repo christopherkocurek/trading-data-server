@@ -497,7 +497,7 @@ Cover:
                 "content-type": "application/json"
             },
             json={
-                "model": "claude-sonnet-4-5-20250514",
+                "model": "claude-sonnet-4-5",
                 "max_tokens": 1500,
                 "system": TRADING_EXPERT_SYSTEM,
                 "messages": [{"role": "user", "content": prompt}]
