@@ -122,7 +122,9 @@ def fetch_market_data() -> Dict:
 
 def analyze_with_claude(market_data: Dict, recent_logs: list) -> Optional[Dict]:
     """Send market data to Claude for analysis."""
-    if not ANTHROPIC_API_KEY:
+    # Read API key at runtime to ensure env var is available
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
         print("No ANTHROPIC_API_KEY set, skipping Claude analysis")
         return generate_rule_based_analysis(market_data)
 
@@ -158,7 +160,7 @@ Be direct and conversational. End with a clear bias statement: BULLISH, BEARISH,
         resp = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
-                "x-api-key": ANTHROPIC_API_KEY,
+                "x-api-key": api_key,
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json"
             },
