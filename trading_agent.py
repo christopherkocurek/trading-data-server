@@ -158,19 +158,24 @@ def calculate_macd(closes: list, fast: int = 12, slow: int = 26, signal: int = 9
     }
 
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+}
+
 def fetch_binance_klines(symbol: str = "BTCUSDT", interval: str = "1d", limit: int = 250) -> list:
     """Fetch kline data from Binance."""
     try:
         resp = requests.get(
             "https://api.binance.com/api/v3/klines",
             params={"symbol": symbol, "interval": interval, "limit": limit},
+            headers=HEADERS,
             timeout=10
         )
         result = resp.json()
         # Check if it's a valid list of klines (not an error dict)
         if isinstance(result, list) and len(result) > 0 and isinstance(result[0], list):
             return result
-        print(f"Binance returned unexpected format: {str(result)[:200]}")
+        print(f"Binance klines returned unexpected format: {str(result)[:200]}")
         return []
     except Exception as e:
         print(f"Error fetching Binance klines: {e}")
@@ -333,6 +338,7 @@ def fetch_market_data() -> Dict:
                 "include_24hr_vol": "true",
                 "include_market_cap": "true"
             },
+            headers=HEADERS,
             timeout=10
         )
         btc = resp.json().get("bitcoin", {})
@@ -361,6 +367,7 @@ def fetch_market_data() -> Dict:
         resp = requests.get(
             "https://fapi.binance.com/fapi/v1/fundingRate",
             params={"symbol": "BTCUSDT", "limit": 1},
+            headers=HEADERS,
             timeout=10
         )
         funding = resp.json()
@@ -376,6 +383,7 @@ def fetch_market_data() -> Dict:
         resp = requests.get(
             "https://fapi.binance.com/fapi/v1/openInterest",
             params={"symbol": "BTCUSDT"},
+            headers=HEADERS,
             timeout=10
         )
         oi_data = resp.json()
@@ -389,6 +397,7 @@ def fetch_market_data() -> Dict:
         resp = requests.get(
             "https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
             params={"symbol": "BTCUSDT", "period": "1h", "limit": 1},
+            headers=HEADERS,
             timeout=10
         )
         ls = resp.json()
