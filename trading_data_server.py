@@ -503,7 +503,7 @@ User question: {chat.message}"""
                 "content-type": "application/json"
             },
             json={
-                "model": "claude-3-5-sonnet-latest",
+                "model": "claude-sonnet-4-5-20250514",
                 "max_tokens": 1024,
                 "system": system,
                 "messages": messages
