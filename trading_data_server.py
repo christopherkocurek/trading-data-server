@@ -25,6 +25,7 @@ import threading
 from database import get_database, TradingDatabase
 from signal_detector import get_signal_detector, SignalDetector
 from exchanges import get_exchange_manager, ExchangeManager
+from trading_agent import fetch_market_data, TRADING_EXPERT_SYSTEM
 
 # Scheduler for autonomous agent
 scheduler = None
@@ -457,12 +458,14 @@ async def chat_with_agent(chat: ChatRequest):
     chat_history = db.get_chat_history(limit=20)
 
     # Fetch LIVE market data directly (not from database)
-    from trading_agent import fetch_market_data
     print("Chat: Fetching live market data...")
-    market_data = fetch_market_data()
+    try:
+        market_data = fetch_market_data()
+    except Exception as e:
+        print(f"Error fetching market data: {e}")
+        market_data = {}
 
-    # Use the trading expert system prompt
-    from trading_agent import TRADING_EXPERT_SYSTEM
+    # Use the trading expert system prompt (imported at top)
     system = TRADING_EXPERT_SYSTEM + "\n\nYou are chatting with a trader. Use your recent analyses for context. Be helpful and actionable."
 
     # Build messages
