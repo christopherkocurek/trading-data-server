@@ -456,8 +456,10 @@ async def chat_with_agent(chat: ChatRequest):
     recent_logs = db.get_agent_logs(limit=5, log_type='analysis')
     chat_history = db.get_chat_history(limit=20)
 
-    # Get current market data
-    summary = db.get_summary("BTCUSD")
+    # Fetch LIVE market data directly (not from database)
+    from trading_agent import fetch_market_data
+    print("Chat: Fetching live market data...")
+    market_data = fetch_market_data()
 
     # Use the trading expert system prompt
     from trading_agent import TRADING_EXPERT_SYSTEM
@@ -479,16 +481,30 @@ async def chat_with_agent(chat: ChatRequest):
     for msg in chat_history[-10:]:
         messages.append({"role": msg["role"], "content": msg["content"]})
 
-    # Add current message with market data
-    price = summary.get('price')
-    price_str = f"${price:,.0f}" if price else "N/A"
-    rsi = summary.get('indicators', {}).get('rsi_daily', 'N/A')
-    above_ma = summary.get('indicators', {}).get('above_200ma', 'N/A')
+    # Format live market data for the prompt
+    def fmt(val, prefix="", suffix=""):
+        if val is None: return "N/A"
+        if isinstance(val, float): return f"{prefix}{val:,.1f}{suffix}" if abs(val) < 1000 else f"{prefix}{val:,.0f}{suffix}"
+        return f"{prefix}{val}{suffix}"
 
-    current_msg = f"""Current market snapshot:
-- BTC: {price_str}
-- RSI: {rsi}
-- Above 200 MA: {above_ma}
+    price = market_data.get('price')
+    rsi = market_data.get('rsi')
+    ma_200 = market_data.get('ma_200')
+    above_200ma = market_data.get('above_200ma')
+    macd_hist = market_data.get('macd_histogram')
+    funding = market_data.get('funding_rate')
+    fng = market_data.get('fear_greed')
+    fng_label = market_data.get('fear_greed_label', '')
+    long_pct = market_data.get('long_pct')
+
+    current_msg = f"""## LIVE MARKET DATA (just fetched):
+- **BTC Price**: {fmt(price, "$")}
+- **RSI (14-day)**: {fmt(rsi)} {'(OVERSOLD <30)' if rsi and rsi < 30 else '(OVERBOUGHT >70)' if rsi and rsi > 70 else ''}
+- **200 MA**: {fmt(ma_200, "$")} - Price is {'ABOVE ✓' if above_200ma else 'BELOW ✗'} (PTJ Rule)
+- **MACD Histogram**: {fmt(macd_hist)}
+- **Funding Rate**: {fmt(funding, suffix="%")} {'(shorts crowded)' if funding and funding < -0.03 else '(longs crowded)' if funding and funding > 0.08 else ''}
+- **Fear & Greed**: {fng} ({fng_label})
+- **Long/Short**: {fmt(long_pct, suffix="% long")}
 
 User question: {chat.message}"""
 
