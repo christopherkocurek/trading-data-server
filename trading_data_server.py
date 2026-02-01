@@ -520,9 +520,12 @@ User question: {chat.message}"""
 
             return {"response": response_text}
         else:
-            return {"error": f"API error: {resp.status_code}", "response": None}
+            error_detail = resp.text[:500] if resp.text else "No details"
+            print(f"Anthropic API error {resp.status_code}: {error_detail}")
+            return {"error": f"API error: {resp.status_code}", "detail": error_detail, "response": None}
 
     except Exception as e:
+        print(f"Chat exception: {e}")
         return {"error": str(e), "response": None}
 
 
