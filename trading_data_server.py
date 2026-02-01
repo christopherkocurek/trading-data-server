@@ -481,10 +481,15 @@ Be direct, specific, and actionable. Reference the trading-expert framework rule
         messages.append({"role": msg["role"], "content": msg["content"]})
 
     # Add current message with market data
+    price = summary.get('price')
+    price_str = f"${price:,.0f}" if price else "N/A"
+    rsi = summary.get('indicators', {}).get('rsi_daily', 'N/A')
+    above_ma = summary.get('indicators', {}).get('above_200ma', 'N/A')
+
     current_msg = f"""Current market snapshot:
-- BTC: ${summary.get('price', 'N/A'):,.0f}
-- RSI: {summary.get('indicators', {}).get('rsi_daily', 'N/A')}
-- Above 200 MA: {summary.get('indicators', {}).get('above_200ma', 'N/A')}
+- BTC: {price_str}
+- RSI: {rsi}
+- Above 200 MA: {above_ma}
 
 User question: {chat.message}"""
 
