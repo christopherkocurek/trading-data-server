@@ -357,6 +357,215 @@ def fetch_onchain_metrics() -> Dict:
     return data
 
 
+def fetch_derivatives_enhanced() -> Dict:
+    """
+    Fetch enhanced derivatives data for liquidation/positioning analysis.
+    Uses Binance public APIs (no key required).
+    """
+    result = {
+        'oi_trend_24h': None,           # OI change over 24h
+        'oi_trend_direction': None,     # 'expanding' | 'contracting'
+        'funding_trend_8h': None,       # Average funding over 8h
+        'funding_direction': None,      # 'rising' | 'falling' | 'stable'
+        'predicted_funding': None,      # Estimated next funding based on trend
+        'taker_buy_sell_ratio': None,   # Recent taker ratio (proxy for liq pressure)
+        'top_trader_sentiment': None,   # Top traders long/short
+        'crowded_side': None,           # 'longs' | 'shorts' | 'balanced'
+        'liq_proxy_signal': None,       # Liquidation pressure signal
+    }
+
+    # 1. Open Interest History (24h trend)
+    try:
+        resp = requests.get(
+            "https://fapi.binance.com/futures/data/openInterestHist",
+            params={"symbol": "BTCUSDT", "period": "1h", "limit": 24},
+            headers=HEADERS,
+            timeout=10
+        )
+        oi_data = resp.json()
+        if isinstance(oi_data, list) and len(oi_data) >= 2:
+            oi_values = [float(d.get('sumOpenInterestValue', 0)) for d in oi_data]
+            if oi_values[0] > 0:
+                oi_change = (oi_values[-1] / oi_values[0] - 1) * 100
+                result['oi_trend_24h'] = round(oi_change, 2)
+                result['oi_trend_direction'] = 'expanding' if oi_change > 1 else 'contracting' if oi_change < -1 else 'stable'
+    except Exception as e:
+        print(f"Error fetching OI history: {e}")
+
+    # 2. Funding Rate History (8h trend - 1 funding period)
+    try:
+        resp = requests.get(
+            "https://fapi.binance.com/fapi/v1/fundingRate",
+            params={"symbol": "BTCUSDT", "limit": 8},
+            headers=HEADERS,
+            timeout=10
+        )
+        funding_data = resp.json()
+        if isinstance(funding_data, list) and len(funding_data) >= 2:
+            funding_rates = [float(d.get('fundingRate', 0)) * 100 for d in funding_data]
+            avg_funding = sum(funding_rates) / len(funding_rates)
+            current_funding = funding_rates[-1] if funding_rates else 0
+
+            result['funding_trend_8h'] = round(avg_funding, 4)
+
+            # Determine direction
+            if len(funding_rates) >= 3:
+                recent_avg = sum(funding_rates[-3:]) / 3
+                older_avg = sum(funding_rates[:3]) / 3
+                if recent_avg > older_avg + 0.002:
+                    result['funding_direction'] = 'rising'
+                elif recent_avg < older_avg - 0.002:
+                    result['funding_direction'] = 'falling'
+                else:
+                    result['funding_direction'] = 'stable'
+
+            # Predict next funding (simple momentum)
+            if len(funding_rates) >= 2:
+                momentum = funding_rates[-1] - funding_rates[-2]
+                result['predicted_funding'] = round(current_funding + momentum * 0.5, 4)
+    except Exception as e:
+        print(f"Error fetching funding history: {e}")
+
+    # 3. Taker Buy/Sell Ratio (liquidation pressure proxy)
+    try:
+        resp = requests.get(
+            "https://fapi.binance.com/futures/data/takerlongshortRatio",
+            params={"symbol": "BTCUSDT", "period": "1h", "limit": 4},
+            headers=HEADERS,
+            timeout=10
+        )
+        taker_data = resp.json()
+        if isinstance(taker_data, list) and len(taker_data) > 0:
+            # Average recent taker ratio
+            ratios = [float(d.get('buySellRatio', 1)) for d in taker_data]
+            avg_ratio = sum(ratios) / len(ratios)
+            result['taker_buy_sell_ratio'] = round(avg_ratio, 4)
+
+            # Interpret: >1.2 = aggressive buying, <0.8 = aggressive selling
+            if avg_ratio > 1.3:
+                result['liq_proxy_signal'] = 'heavy short liquidations likely (buyers dominant)'
+            elif avg_ratio < 0.75:
+                result['liq_proxy_signal'] = 'heavy long liquidations likely (sellers dominant)'
+            elif avg_ratio > 1.1:
+                result['liq_proxy_signal'] = 'mild short pressure'
+            elif avg_ratio < 0.9:
+                result['liq_proxy_signal'] = 'mild long pressure'
+            else:
+                result['liq_proxy_signal'] = 'balanced flow'
+    except Exception as e:
+        print(f"Error fetching taker ratio: {e}")
+
+    # 4. Top Trader Long/Short Ratio (crowded trade detection)
+    try:
+        resp = requests.get(
+            "https://fapi.binance.com/futures/data/topLongShortPositionRatio",
+            params={"symbol": "BTCUSDT", "period": "1h", "limit": 4},
+            headers=HEADERS,
+            timeout=10
+        )
+        position_data = resp.json()
+        if isinstance(position_data, list) and len(position_data) > 0:
+            latest = position_data[-1]
+            long_ratio = float(latest.get('longShortRatio', 1))
+            long_acct = float(latest.get('longAccount', 0.5)) * 100
+
+            result['top_trader_sentiment'] = {
+                'long_pct': round(long_acct, 1),
+                'short_pct': round(100 - long_acct, 1),
+                'ratio': round(long_ratio, 2)
+            }
+
+            # Determine crowded side
+            if long_ratio > 2.0:
+                result['crowded_side'] = 'longs crowded (contrarian short)'
+            elif long_ratio < 0.6:
+                result['crowded_side'] = 'shorts crowded (contrarian long)'
+            elif long_ratio > 1.5:
+                result['crowded_side'] = 'longs elevated'
+            elif long_ratio < 0.8:
+                result['crowded_side'] = 'shorts elevated'
+            else:
+                result['crowded_side'] = 'balanced'
+    except Exception as e:
+        print(f"Error fetching top trader ratio: {e}")
+
+    return result
+
+
+def analyze_derivatives_signal(derivatives: Dict, funding_rate: float = None) -> Dict:
+    """
+    Analyze derivatives data for trading signals.
+    Returns bias and reasoning.
+    """
+    signals_bull = 0
+    signals_bear = 0
+    reasons = []
+
+    # 1. OI Trend Analysis
+    oi_trend = derivatives.get('oi_trend_24h')
+    oi_dir = derivatives.get('oi_trend_direction')
+    if oi_trend is not None:
+        if oi_dir == 'expanding' and oi_trend > 3:
+            signals_bull += 1
+            reasons.append(f"OI expanding +{oi_trend:.1f}% (fresh positioning)")
+        elif oi_dir == 'contracting' and oi_trend < -3:
+            reasons.append(f"OI contracting {oi_trend:.1f}% (deleveraging)")
+
+    # 2. Funding Trend
+    funding_dir = derivatives.get('funding_direction')
+    predicted = derivatives.get('predicted_funding')
+    current_funding = funding_rate if funding_rate is not None else 0
+
+    if predicted is not None and current_funding is not None:
+        if predicted > current_funding + 0.005:
+            signals_bear += 1  # Rising funding = crowded longs
+            reasons.append(f"Funding rising toward {predicted:.4f}% (longs getting expensive)")
+        elif predicted < current_funding - 0.005:
+            signals_bull += 1  # Falling funding = shorts paying
+            reasons.append(f"Funding falling toward {predicted:.4f}% (shorts paying)")
+
+    # 3. Taker Ratio (Liquidation Proxy)
+    taker_ratio = derivatives.get('taker_buy_sell_ratio')
+    liq_signal = derivatives.get('liq_proxy_signal')
+    if taker_ratio:
+        if taker_ratio > 1.25:
+            signals_bull += 1
+            reasons.append(f"Taker buy/sell {taker_ratio:.2f}x - {liq_signal}")
+        elif taker_ratio < 0.8:
+            signals_bear += 1
+            reasons.append(f"Taker buy/sell {taker_ratio:.2f}x - {liq_signal}")
+
+    # 4. Crowded Side Analysis
+    crowded = derivatives.get('crowded_side')
+    if crowded:
+        if 'shorts crowded' in crowded:
+            signals_bull += 1
+            reasons.append(f"Top traders: {crowded}")
+        elif 'longs crowded' in crowded:
+            signals_bear += 1
+            reasons.append(f"Top traders: {crowded}")
+
+    # Determine overall derivatives bias
+    if signals_bull > signals_bear + 1:
+        bias = 'BULLISH'
+    elif signals_bear > signals_bull + 1:
+        bias = 'BEARISH'
+    elif signals_bull > signals_bear:
+        bias = 'SLIGHTLY_BULLISH'
+    elif signals_bear > signals_bull:
+        bias = 'SLIGHTLY_BEARISH'
+    else:
+        bias = 'NEUTRAL'
+
+    return {
+        'bias': bias,
+        'bull_signals': signals_bull,
+        'bear_signals': signals_bear,
+        'reasons': reasons,
+        'has_data': len(reasons) > 0
+    }
+
+
 def fetch_market_data() -> Dict:
     """Fetch all market data from APIs."""
     data = {}
@@ -457,6 +666,18 @@ def fetch_market_data() -> Dict:
     onchain = fetch_onchain_metrics()
     data.update(onchain)
 
+    # Enhanced Derivatives Data (OI trends, funding trends, liquidation proxies)
+    print("Fetching enhanced derivatives data...")
+    derivatives_enhanced = fetch_derivatives_enhanced()
+    data['derivatives_enhanced'] = derivatives_enhanced
+
+    # Analyze derivatives signals
+    derivatives_analysis = analyze_derivatives_signal(
+        derivatives_enhanced,
+        data.get('funding_rate')
+    )
+    data['derivatives_analysis'] = derivatives_analysis
+
     # ETF Flow data (if available)
     try:
         # Try to get BTC ETF flow data from available sources
@@ -510,6 +731,10 @@ def analyze_with_claude(market_data: Dict, recent_logs: list) -> Optional[Dict]:
     hash_rate = market_data.get('hash_rate')
     hash_change = market_data.get('hash_rate_7d_change')
 
+    # Enhanced derivatives data
+    deriv_enhanced = market_data.get('derivatives_enhanced', {})
+    deriv_analysis = market_data.get('derivatives_analysis', {})
+
     # Build the user prompt with market data
     prompt = f"""## HOURLY MARKET UPDATE - {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}
 
@@ -524,11 +749,30 @@ def analyze_with_claude(market_data: Dict, recent_logs: list) -> Optional[Dict]:
 - **NUPL**: Premium data required (threshold: >0.75 SELL, <-0.25 BUY)
 - *Note: MVRV/NUPL require Glassnode subscription - use hash rate trend as proxy*
 
-### STEP 3 - DERIVATIVES DATA:
+### STEP 3 - DERIVATIVES DATA (ENHANCED):
+**Current Snapshot:**
 - **Funding Rate**: {f'{funding:.4f}%' if funding is not None else 'N/A'} (Annualized: {f'{funding_ann:.1f}%' if funding_ann is not None else 'N/A'})
 - **Open Interest**: {fmt_num(oi)} BTC
 - **Long/Short Ratio**: {fmt_pct(long_pct)} Long / {fmt_pct(short_pct)} Short
-- *Interpretation*: {'>0.10% = crowded longs, <-0.05% = crowded shorts' if funding else 'N/A'}
+
+**Trend Analysis (NEW):**
+- **OI Trend (24h)**: {f"{deriv_enhanced.get('oi_trend_24h', 'N/A')}%" if deriv_enhanced.get('oi_trend_24h') is not None else 'N/A'} ({deriv_enhanced.get('oi_trend_direction', 'N/A')})
+- **Funding Trend (8h avg)**: {f"{deriv_enhanced.get('funding_trend_8h', 'N/A'):.4f}%" if deriv_enhanced.get('funding_trend_8h') is not None else 'N/A'} ({deriv_enhanced.get('funding_direction', 'N/A')})
+- **Predicted Next Funding**: {f"{deriv_enhanced.get('predicted_funding', 'N/A'):.4f}%" if deriv_enhanced.get('predicted_funding') is not None else 'N/A'}
+
+**Liquidation Pressure Proxy:**
+- **Taker Buy/Sell Ratio**: {f"{deriv_enhanced.get('taker_buy_sell_ratio', 'N/A'):.2f}x" if deriv_enhanced.get('taker_buy_sell_ratio') else 'N/A'}
+- **Signal**: {deriv_enhanced.get('liq_proxy_signal', 'N/A')}
+- **Top Traders**: {f"{deriv_enhanced.get('top_trader_sentiment', {}).get('long_pct', 'N/A')}% long" if deriv_enhanced.get('top_trader_sentiment') else 'N/A'} ({deriv_enhanced.get('crowded_side', 'N/A')})
+
+**Derivatives Verdict**: {deriv_analysis.get('bias', 'N/A')} ({deriv_analysis.get('bull_signals', 0)} bull / {deriv_analysis.get('bear_signals', 0)} bear signals)
+{chr(10).join('- ' + r for r in deriv_analysis.get('reasons', [])) if deriv_analysis.get('reasons') else '- No significant signals'}
+
+*Interpretation*:
+- Taker ratio >1.2 = shorts getting squeezed (contrarian long)
+- Taker ratio <0.8 = longs getting squeezed (contrarian short)
+- OI expanding + price rising = trend continuation
+- Funding rising = longs paying more (getting crowded)
 
 ### STEP 4 - TECHNICAL DATA:
 - **BTC Price**: {fmt_price(price)} ({change:+.2f}% 24h)
@@ -609,6 +853,10 @@ def generate_rule_based_analysis(market_data: Dict) -> Dict:
     rsi = market_data.get('rsi')
     ma_200 = market_data.get('ma_200')
 
+    # Enhanced derivatives data
+    deriv_analysis = market_data.get('derivatives_analysis', {})
+    deriv_enhanced = market_data.get('derivatives_enhanced', {})
+
     signals_bull = 0
     signals_bear = 0
     points = []
@@ -653,6 +901,19 @@ def generate_rule_based_analysis(market_data: Dict) -> Dict:
         else:
             signals_bear += 2
             points.append(f"Price BELOW 200 MA (${ma_200:,.0f}) - bearish structure")
+
+    # Enhanced Derivatives Signals
+    if deriv_analysis.get('has_data'):
+        deriv_bias = deriv_analysis.get('bias', 'NEUTRAL')
+        deriv_reasons = deriv_analysis.get('reasons', [])
+
+        if 'BULLISH' in deriv_bias:
+            signals_bull += deriv_analysis.get('bull_signals', 0)
+        elif 'BEARISH' in deriv_bias:
+            signals_bear += deriv_analysis.get('bear_signals', 0)
+
+        for reason in deriv_reasons[:3]:  # Add top 3 reasons
+            points.append(f"[Derivatives] {reason}")
 
     # Determine bias
     if signals_bull > signals_bear + 1:
