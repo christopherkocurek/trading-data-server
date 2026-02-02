@@ -360,7 +360,7 @@ def fetch_onchain_metrics() -> Dict:
 def fetch_derivatives_enhanced() -> Dict:
     """
     Fetch enhanced derivatives data for liquidation/positioning analysis.
-    Uses Binance public APIs (no key required).
+    Uses Bybit as primary (not geo-blocked), Binance as fallback.
     """
     result = {
         'oi_trend_24h': None,           # OI change over 24h
@@ -372,122 +372,229 @@ def fetch_derivatives_enhanced() -> Dict:
         'top_trader_sentiment': None,   # Top traders long/short
         'crowded_side': None,           # 'longs' | 'shorts' | 'balanced'
         'liq_proxy_signal': None,       # Liquidation pressure signal
+        'data_source': None,            # Track which API provided data
     }
 
-    # 1. Open Interest History (24h trend)
+    # 1. Open Interest History (24h trend) - Try Bybit first, then Binance
     try:
+        # Bybit OI History
         resp = requests.get(
-            "https://fapi.binance.com/futures/data/openInterestHist",
-            params={"symbol": "BTCUSDT", "period": "1h", "limit": 24},
+            "https://api.bybit.com/v5/market/open-interest",
+            params={"category": "linear", "symbol": "BTCUSDT", "intervalTime": "1h", "limit": 24},
             headers=HEADERS,
             timeout=10
         )
-        oi_data = resp.json()
-        if isinstance(oi_data, list) and len(oi_data) >= 2:
-            oi_values = [float(d.get('sumOpenInterestValue', 0)) for d in oi_data]
-            if oi_values[0] > 0:
-                oi_change = (oi_values[-1] / oi_values[0] - 1) * 100
-                result['oi_trend_24h'] = round(oi_change, 2)
-                result['oi_trend_direction'] = 'expanding' if oi_change > 1 else 'contracting' if oi_change < -1 else 'stable'
+        data = resp.json()
+        if data.get('retCode') == 0:
+            oi_list = data.get('result', {}).get('list', [])
+            if len(oi_list) >= 2:
+                # Bybit returns newest first, so reverse for chronological
+                oi_values = [float(d.get('openInterest', 0)) for d in reversed(oi_list)]
+                if oi_values[0] > 0:
+                    oi_change = (oi_values[-1] / oi_values[0] - 1) * 100
+                    result['oi_trend_24h'] = round(oi_change, 2)
+                    result['oi_trend_direction'] = 'expanding' if oi_change > 1 else 'contracting' if oi_change < -1 else 'stable'
+                    result['data_source'] = 'bybit'
     except Exception as e:
-        print(f"Error fetching OI history: {e}")
+        print(f"Bybit OI error: {e}")
 
-    # 2. Funding Rate History (8h trend - 1 funding period)
+    # Fallback to Binance if Bybit failed
+    if result['oi_trend_24h'] is None:
+        try:
+            resp = requests.get(
+                "https://fapi.binance.com/futures/data/openInterestHist",
+                params={"symbol": "BTCUSDT", "period": "1h", "limit": 24},
+                headers=HEADERS,
+                timeout=10
+            )
+            oi_data = resp.json()
+            if isinstance(oi_data, list) and len(oi_data) >= 2:
+                oi_values = [float(d.get('sumOpenInterestValue', 0)) for d in oi_data]
+                if oi_values[0] > 0:
+                    oi_change = (oi_values[-1] / oi_values[0] - 1) * 100
+                    result['oi_trend_24h'] = round(oi_change, 2)
+                    result['oi_trend_direction'] = 'expanding' if oi_change > 1 else 'contracting' if oi_change < -1 else 'stable'
+                    result['data_source'] = 'binance'
+        except Exception as e:
+            print(f"Binance OI fallback error: {e}")
+
+    # 2. Funding Rate History - Try Bybit first
     try:
         resp = requests.get(
-            "https://fapi.binance.com/fapi/v1/fundingRate",
-            params={"symbol": "BTCUSDT", "limit": 8},
+            "https://api.bybit.com/v5/market/funding/history",
+            params={"category": "linear", "symbol": "BTCUSDT", "limit": 8},
             headers=HEADERS,
             timeout=10
         )
-        funding_data = resp.json()
-        if isinstance(funding_data, list) and len(funding_data) >= 2:
-            funding_rates = [float(d.get('fundingRate', 0)) * 100 for d in funding_data]
-            avg_funding = sum(funding_rates) / len(funding_rates)
-            current_funding = funding_rates[-1] if funding_rates else 0
+        data = resp.json()
+        if data.get('retCode') == 0:
+            funding_list = data.get('result', {}).get('list', [])
+            if len(funding_list) >= 2:
+                # Bybit returns newest first
+                funding_rates = [float(d.get('fundingRate', 0)) * 100 for d in reversed(funding_list)]
+                avg_funding = sum(funding_rates) / len(funding_rates)
+                current_funding = funding_rates[-1] if funding_rates else 0
 
-            result['funding_trend_8h'] = round(avg_funding, 4)
+                result['funding_trend_8h'] = round(avg_funding, 4)
 
-            # Determine direction
-            if len(funding_rates) >= 3:
-                recent_avg = sum(funding_rates[-3:]) / 3
-                older_avg = sum(funding_rates[:3]) / 3
-                if recent_avg > older_avg + 0.002:
-                    result['funding_direction'] = 'rising'
-                elif recent_avg < older_avg - 0.002:
-                    result['funding_direction'] = 'falling'
+                # Determine direction
+                if len(funding_rates) >= 3:
+                    recent_avg = sum(funding_rates[-3:]) / 3
+                    older_avg = sum(funding_rates[:3]) / 3
+                    if recent_avg > older_avg + 0.002:
+                        result['funding_direction'] = 'rising'
+                    elif recent_avg < older_avg - 0.002:
+                        result['funding_direction'] = 'falling'
+                    else:
+                        result['funding_direction'] = 'stable'
+
+                # Predict next funding
+                if len(funding_rates) >= 2:
+                    momentum = funding_rates[-1] - funding_rates[-2]
+                    result['predicted_funding'] = round(current_funding + momentum * 0.5, 4)
+    except Exception as e:
+        print(f"Bybit funding error: {e}")
+
+    # Fallback to Binance for funding
+    if result['funding_trend_8h'] is None:
+        try:
+            resp = requests.get(
+                "https://fapi.binance.com/fapi/v1/fundingRate",
+                params={"symbol": "BTCUSDT", "limit": 8},
+                headers=HEADERS,
+                timeout=10
+            )
+            funding_data = resp.json()
+            if isinstance(funding_data, list) and len(funding_data) >= 2:
+                funding_rates = [float(d.get('fundingRate', 0)) * 100 for d in funding_data]
+                avg_funding = sum(funding_rates) / len(funding_rates)
+                current_funding = funding_rates[-1] if funding_rates else 0
+
+                result['funding_trend_8h'] = round(avg_funding, 4)
+
+                if len(funding_rates) >= 3:
+                    recent_avg = sum(funding_rates[-3:]) / 3
+                    older_avg = sum(funding_rates[:3]) / 3
+                    if recent_avg > older_avg + 0.002:
+                        result['funding_direction'] = 'rising'
+                    elif recent_avg < older_avg - 0.002:
+                        result['funding_direction'] = 'falling'
+                    else:
+                        result['funding_direction'] = 'stable'
+
+                if len(funding_rates) >= 2:
+                    momentum = funding_rates[-1] - funding_rates[-2]
+                    result['predicted_funding'] = round(current_funding + momentum * 0.5, 4)
+        except Exception as e:
+            print(f"Binance funding fallback error: {e}")
+
+    # 3. Long/Short Ratio - Try Bybit account-ratio
+    try:
+        resp = requests.get(
+            "https://api.bybit.com/v5/market/account-ratio",
+            params={"category": "linear", "symbol": "BTCUSDT", "period": "1h", "limit": 4},
+            headers=HEADERS,
+            timeout=10
+        )
+        data = resp.json()
+        if data.get('retCode') == 0:
+            ratio_list = data.get('result', {}).get('list', [])
+            if len(ratio_list) > 0:
+                # Use buyRatio as taker buy ratio proxy
+                ratios = [float(d.get('buyRatio', 0.5)) / float(d.get('sellRatio', 0.5))
+                          if float(d.get('sellRatio', 0.5)) > 0 else 1
+                          for d in ratio_list]
+                avg_ratio = sum(ratios) / len(ratios)
+                result['taker_buy_sell_ratio'] = round(avg_ratio, 4)
+
+                # Also use for top trader sentiment
+                latest = ratio_list[0]  # Newest first
+                buy_pct = float(latest.get('buyRatio', 0.5)) * 100
+                result['top_trader_sentiment'] = {
+                    'long_pct': round(buy_pct, 1),
+                    'short_pct': round(100 - buy_pct, 1),
+                    'ratio': round(avg_ratio, 2)
+                }
+
+                # Interpret ratio
+                if avg_ratio > 1.3:
+                    result['liq_proxy_signal'] = 'heavy short liquidations likely (buyers dominant)'
+                    result['crowded_side'] = 'longs elevated'
+                elif avg_ratio < 0.75:
+                    result['liq_proxy_signal'] = 'heavy long liquidations likely (sellers dominant)'
+                    result['crowded_side'] = 'shorts elevated'
+                elif avg_ratio > 1.1:
+                    result['liq_proxy_signal'] = 'mild short pressure'
+                    result['crowded_side'] = 'longs elevated'
+                elif avg_ratio < 0.9:
+                    result['liq_proxy_signal'] = 'mild long pressure'
+                    result['crowded_side'] = 'shorts elevated'
                 else:
-                    result['funding_direction'] = 'stable'
-
-            # Predict next funding (simple momentum)
-            if len(funding_rates) >= 2:
-                momentum = funding_rates[-1] - funding_rates[-2]
-                result['predicted_funding'] = round(current_funding + momentum * 0.5, 4)
+                    result['liq_proxy_signal'] = 'balanced flow'
+                    result['crowded_side'] = 'balanced'
     except Exception as e:
-        print(f"Error fetching funding history: {e}")
+        print(f"Bybit ratio error: {e}")
 
-    # 3. Taker Buy/Sell Ratio (liquidation pressure proxy)
-    try:
-        resp = requests.get(
-            "https://fapi.binance.com/futures/data/takerlongshortRatio",
-            params={"symbol": "BTCUSDT", "period": "1h", "limit": 4},
-            headers=HEADERS,
-            timeout=10
-        )
-        taker_data = resp.json()
-        if isinstance(taker_data, list) and len(taker_data) > 0:
-            # Average recent taker ratio
-            ratios = [float(d.get('buySellRatio', 1)) for d in taker_data]
-            avg_ratio = sum(ratios) / len(ratios)
-            result['taker_buy_sell_ratio'] = round(avg_ratio, 4)
+    # Fallback to Binance for ratios
+    if result['taker_buy_sell_ratio'] is None:
+        try:
+            resp = requests.get(
+                "https://fapi.binance.com/futures/data/takerlongshortRatio",
+                params={"symbol": "BTCUSDT", "period": "1h", "limit": 4},
+                headers=HEADERS,
+                timeout=10
+            )
+            taker_data = resp.json()
+            if isinstance(taker_data, list) and len(taker_data) > 0:
+                ratios = [float(d.get('buySellRatio', 1)) for d in taker_data]
+                avg_ratio = sum(ratios) / len(ratios)
+                result['taker_buy_sell_ratio'] = round(avg_ratio, 4)
 
-            # Interpret: >1.2 = aggressive buying, <0.8 = aggressive selling
-            if avg_ratio > 1.3:
-                result['liq_proxy_signal'] = 'heavy short liquidations likely (buyers dominant)'
-            elif avg_ratio < 0.75:
-                result['liq_proxy_signal'] = 'heavy long liquidations likely (sellers dominant)'
-            elif avg_ratio > 1.1:
-                result['liq_proxy_signal'] = 'mild short pressure'
-            elif avg_ratio < 0.9:
-                result['liq_proxy_signal'] = 'mild long pressure'
-            else:
-                result['liq_proxy_signal'] = 'balanced flow'
-    except Exception as e:
-        print(f"Error fetching taker ratio: {e}")
+                if avg_ratio > 1.3:
+                    result['liq_proxy_signal'] = 'heavy short liquidations likely (buyers dominant)'
+                elif avg_ratio < 0.75:
+                    result['liq_proxy_signal'] = 'heavy long liquidations likely (sellers dominant)'
+                elif avg_ratio > 1.1:
+                    result['liq_proxy_signal'] = 'mild short pressure'
+                elif avg_ratio < 0.9:
+                    result['liq_proxy_signal'] = 'mild long pressure'
+                else:
+                    result['liq_proxy_signal'] = 'balanced flow'
+        except Exception as e:
+            print(f"Binance taker ratio fallback error: {e}")
 
-    # 4. Top Trader Long/Short Ratio (crowded trade detection)
-    try:
-        resp = requests.get(
-            "https://fapi.binance.com/futures/data/topLongShortPositionRatio",
-            params={"symbol": "BTCUSDT", "period": "1h", "limit": 4},
-            headers=HEADERS,
-            timeout=10
-        )
-        position_data = resp.json()
-        if isinstance(position_data, list) and len(position_data) > 0:
-            latest = position_data[-1]
-            long_ratio = float(latest.get('longShortRatio', 1))
-            long_acct = float(latest.get('longAccount', 0.5)) * 100
+    if result['top_trader_sentiment'] is None:
+        try:
+            resp = requests.get(
+                "https://fapi.binance.com/futures/data/topLongShortPositionRatio",
+                params={"symbol": "BTCUSDT", "period": "1h", "limit": 4},
+                headers=HEADERS,
+                timeout=10
+            )
+            position_data = resp.json()
+            if isinstance(position_data, list) and len(position_data) > 0:
+                latest = position_data[-1]
+                long_ratio = float(latest.get('longShortRatio', 1))
+                long_acct = float(latest.get('longAccount', 0.5)) * 100
 
-            result['top_trader_sentiment'] = {
-                'long_pct': round(long_acct, 1),
-                'short_pct': round(100 - long_acct, 1),
-                'ratio': round(long_ratio, 2)
-            }
+                result['top_trader_sentiment'] = {
+                    'long_pct': round(long_acct, 1),
+                    'short_pct': round(100 - long_acct, 1),
+                    'ratio': round(long_ratio, 2)
+                }
 
-            # Determine crowded side
-            if long_ratio > 2.0:
-                result['crowded_side'] = 'longs crowded (contrarian short)'
-            elif long_ratio < 0.6:
-                result['crowded_side'] = 'shorts crowded (contrarian long)'
-            elif long_ratio > 1.5:
-                result['crowded_side'] = 'longs elevated'
-            elif long_ratio < 0.8:
-                result['crowded_side'] = 'shorts elevated'
-            else:
-                result['crowded_side'] = 'balanced'
-    except Exception as e:
-        print(f"Error fetching top trader ratio: {e}")
+                if long_ratio > 2.0:
+                    result['crowded_side'] = 'longs crowded (contrarian short)'
+                elif long_ratio < 0.6:
+                    result['crowded_side'] = 'shorts crowded (contrarian long)'
+                elif long_ratio > 1.5:
+                    result['crowded_side'] = 'longs elevated'
+                elif long_ratio < 0.8:
+                    result['crowded_side'] = 'shorts elevated'
+                else:
+                    result['crowded_side'] = 'balanced'
+        except Exception as e:
+            print(f"Binance top trader fallback error: {e}")
 
     return result
 
@@ -605,51 +712,106 @@ def fetch_market_data() -> Dict:
     except Exception as e:
         print(f"Error fetching Fear & Greed: {e}")
 
-    # Binance Funding Rate
+    # Funding Rate - Try Bybit first (not geo-blocked), then Binance
     try:
         resp = requests.get(
-            "https://fapi.binance.com/fapi/v1/fundingRate",
-            params={"symbol": "BTCUSDT", "limit": 1},
+            "https://api.bybit.com/v5/market/funding/history",
+            params={"category": "linear", "symbol": "BTCUSDT", "limit": 1},
             headers=HEADERS,
             timeout=10
         )
-        funding = resp.json()
-        if isinstance(funding, list) and len(funding) > 0 and isinstance(funding[0], dict):
-            rate = float(funding[0].get("fundingRate", 0))
-            data["funding_rate"] = rate * 100
-            data["funding_annualized"] = rate * 3 * 365 * 100
+        bybit_data = resp.json()
+        if bybit_data.get('retCode') == 0:
+            funding_list = bybit_data.get('result', {}).get('list', [])
+            if funding_list:
+                rate = float(funding_list[0].get("fundingRate", 0))
+                data["funding_rate"] = rate * 100
+                data["funding_annualized"] = rate * 3 * 365 * 100
     except Exception as e:
-        print(f"Error fetching funding rate: {e}")
+        print(f"Bybit funding error: {e}")
 
-    # Open Interest
-    try:
-        resp = requests.get(
-            "https://fapi.binance.com/fapi/v1/openInterest",
-            params={"symbol": "BTCUSDT"},
-            headers=HEADERS,
-            timeout=10
-        )
-        oi_data = resp.json()
-        if isinstance(oi_data, dict) and "openInterest" in oi_data:
-            data["open_interest"] = float(oi_data.get("openInterest", 0))
-    except Exception as e:
-        print(f"Error fetching OI: {e}")
+    # Fallback to Binance
+    if data.get("funding_rate") is None:
+        try:
+            resp = requests.get(
+                "https://fapi.binance.com/fapi/v1/fundingRate",
+                params={"symbol": "BTCUSDT", "limit": 1},
+                headers=HEADERS,
+                timeout=10
+            )
+            funding = resp.json()
+            if isinstance(funding, list) and len(funding) > 0 and isinstance(funding[0], dict):
+                rate = float(funding[0].get("fundingRate", 0))
+                data["funding_rate"] = rate * 100
+                data["funding_annualized"] = rate * 3 * 365 * 100
+        except Exception as e:
+            print(f"Binance funding fallback error: {e}")
 
-    # Long/Short Ratio
+    # Open Interest - Try Bybit first
     try:
         resp = requests.get(
-            "https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
-            params={"symbol": "BTCUSDT", "period": "1h", "limit": 1},
+            "https://api.bybit.com/v5/market/open-interest",
+            params={"category": "linear", "symbol": "BTCUSDT", "intervalTime": "5min", "limit": 1},
             headers=HEADERS,
             timeout=10
         )
-        ls = resp.json()
-        if isinstance(ls, list) and len(ls) > 0 and isinstance(ls[0], dict):
-            ratio = float(ls[0].get("longShortRatio", 1))
-            data["long_pct"] = ratio / (1 + ratio) * 100
-            data["short_pct"] = 100 - data["long_pct"]
+        bybit_data = resp.json()
+        if bybit_data.get('retCode') == 0:
+            oi_list = bybit_data.get('result', {}).get('list', [])
+            if oi_list:
+                data["open_interest"] = float(oi_list[0].get("openInterest", 0))
     except Exception as e:
-        print(f"Error fetching L/S ratio: {e}")
+        print(f"Bybit OI error: {e}")
+
+    # Fallback to Binance
+    if data.get("open_interest") is None:
+        try:
+            resp = requests.get(
+                "https://fapi.binance.com/fapi/v1/openInterest",
+                params={"symbol": "BTCUSDT"},
+                headers=HEADERS,
+                timeout=10
+            )
+            oi_data = resp.json()
+            if isinstance(oi_data, dict) and "openInterest" in oi_data:
+                data["open_interest"] = float(oi_data.get("openInterest", 0))
+        except Exception as e:
+            print(f"Binance OI fallback error: {e}")
+
+    # Long/Short Ratio - Try Bybit first
+    try:
+        resp = requests.get(
+            "https://api.bybit.com/v5/market/account-ratio",
+            params={"category": "linear", "symbol": "BTCUSDT", "period": "1h", "limit": 1},
+            headers=HEADERS,
+            timeout=10
+        )
+        bybit_data = resp.json()
+        if bybit_data.get('retCode') == 0:
+            ratio_list = bybit_data.get('result', {}).get('list', [])
+            if ratio_list:
+                buy_ratio = float(ratio_list[0].get("buyRatio", 0.5))
+                data["long_pct"] = buy_ratio * 100
+                data["short_pct"] = 100 - data["long_pct"]
+    except Exception as e:
+        print(f"Bybit L/S ratio error: {e}")
+
+    # Fallback to Binance
+    if data.get("long_pct") is None:
+        try:
+            resp = requests.get(
+                "https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
+                params={"symbol": "BTCUSDT", "period": "1h", "limit": 1},
+                headers=HEADERS,
+                timeout=10
+            )
+            ls = resp.json()
+            if isinstance(ls, list) and len(ls) > 0 and isinstance(ls[0], dict):
+                ratio = float(ls[0].get("longShortRatio", 1))
+                data["long_pct"] = ratio / (1 + ratio) * 100
+                data["short_pct"] = 100 - data["long_pct"]
+        except Exception as e:
+            print(f"Binance L/S ratio fallback error: {e}")
 
     # Technical Indicators (calculated from Binance klines)
     print("Calculating technical indicators from Binance...")
