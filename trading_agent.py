@@ -712,23 +712,33 @@ def fetch_market_data() -> Dict:
     except Exception as e:
         print(f"Error fetching Fear & Greed: {e}")
 
-    # Funding Rate - Try Bybit first (not geo-blocked), then Binance
+    # Funding Rate + OI - Try Bybit tickers endpoint (has current funding, not historical)
     try:
         resp = requests.get(
-            "https://api.bybit.com/v5/market/funding/history",
-            params={"category": "linear", "symbol": "BTCUSDT", "limit": 1},
+            "https://api.bybit.com/v5/market/tickers",
+            params={"category": "linear", "symbol": "BTCUSDT"},
             headers=HEADERS,
             timeout=10
         )
         bybit_data = resp.json()
+        print(f"Bybit tickers response: retCode={bybit_data.get('retCode')}")
         if bybit_data.get('retCode') == 0:
-            funding_list = bybit_data.get('result', {}).get('list', [])
-            if funding_list:
-                rate = float(funding_list[0].get("fundingRate", 0))
-                data["funding_rate"] = rate * 100
-                data["funding_annualized"] = rate * 3 * 365 * 100
+            ticker = bybit_data.get('result', {}).get('list', [{}])[0]
+            if ticker:
+                # Current funding rate
+                funding_str = ticker.get("fundingRate")
+                if funding_str:
+                    rate = float(funding_str)
+                    data["funding_rate"] = rate * 100
+                    data["funding_annualized"] = rate * 3 * 365 * 100
+                    print(f"Bybit funding rate: {rate * 100:.4f}%")
+                # Open interest from same endpoint
+                oi = ticker.get("openInterest")
+                if oi:
+                    data["open_interest"] = float(oi)
+                    print(f"Bybit OI: {oi}")
     except Exception as e:
-        print(f"Bybit funding error: {e}")
+        print(f"Bybit tickers error: {e}")
 
     # Fallback to Binance
     if data.get("funding_rate") is None:
@@ -747,21 +757,23 @@ def fetch_market_data() -> Dict:
         except Exception as e:
             print(f"Binance funding fallback error: {e}")
 
-    # Open Interest - Try Bybit first
-    try:
-        resp = requests.get(
-            "https://api.bybit.com/v5/market/open-interest",
-            params={"category": "linear", "symbol": "BTCUSDT", "intervalTime": "5min", "limit": 1},
-            headers=HEADERS,
-            timeout=10
-        )
-        bybit_data = resp.json()
-        if bybit_data.get('retCode') == 0:
-            oi_list = bybit_data.get('result', {}).get('list', [])
-            if oi_list:
-                data["open_interest"] = float(oi_list[0].get("openInterest", 0))
-    except Exception as e:
-        print(f"Bybit OI error: {e}")
+    # Open Interest - Skip if already got from tickers, otherwise try Bybit endpoint
+    if data.get("open_interest") is None:
+        try:
+            resp = requests.get(
+                "https://api.bybit.com/v5/market/open-interest",
+                params={"category": "linear", "symbol": "BTCUSDT", "intervalTime": "5min", "limit": 1},
+                headers=HEADERS,
+                timeout=10
+            )
+            bybit_data = resp.json()
+            if bybit_data.get('retCode') == 0:
+                oi_list = bybit_data.get('result', {}).get('list', [])
+                if oi_list:
+                    data["open_interest"] = float(oi_list[0].get("openInterest", 0))
+                    print(f"Bybit OI (from open-interest endpoint): {data['open_interest']}")
+        except Exception as e:
+            print(f"Bybit OI error: {e}")
 
     # Fallback to Binance
     if data.get("open_interest") is None:

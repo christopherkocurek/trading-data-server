@@ -621,6 +621,84 @@ async def debug_fetch_data():
         }
 
 
+@app.get("/api/debug/derivatives")
+async def debug_derivatives():
+    """Debug endpoint to test each derivatives API individually."""
+    import requests
+    results = {}
+    HEADERS = {"User-Agent": "Mozilla/5.0 TradingAgent/1.0"}
+
+    # Test Bybit Tickers (funding + OI)
+    try:
+        resp = requests.get(
+            "https://api.bybit.com/v5/market/tickers",
+            params={"category": "linear", "symbol": "BTCUSDT"},
+            headers=HEADERS,
+            timeout=10
+        )
+        data = resp.json()
+        results["bybit_tickers"] = {
+            "status": resp.status_code,
+            "retCode": data.get("retCode"),
+            "fundingRate": data.get("result", {}).get("list", [{}])[0].get("fundingRate") if data.get("result") else None,
+            "openInterest": data.get("result", {}).get("list", [{}])[0].get("openInterest") if data.get("result") else None,
+        }
+    except Exception as e:
+        results["bybit_tickers"] = {"error": str(e)}
+
+    # Test Bybit funding history
+    try:
+        resp = requests.get(
+            "https://api.bybit.com/v5/market/funding/history",
+            params={"category": "linear", "symbol": "BTCUSDT", "limit": 1},
+            headers=HEADERS,
+            timeout=10
+        )
+        data = resp.json()
+        results["bybit_funding_history"] = {
+            "status": resp.status_code,
+            "retCode": data.get("retCode"),
+            "list_length": len(data.get("result", {}).get("list", [])),
+        }
+    except Exception as e:
+        results["bybit_funding_history"] = {"error": str(e)}
+
+    # Test Bybit Long/Short
+    try:
+        resp = requests.get(
+            "https://api.bybit.com/v5/market/account-ratio",
+            params={"category": "linear", "symbol": "BTCUSDT", "period": "1h", "limit": 1},
+            headers=HEADERS,
+            timeout=10
+        )
+        data = resp.json()
+        results["bybit_ls_ratio"] = {
+            "status": resp.status_code,
+            "retCode": data.get("retCode"),
+            "list_length": len(data.get("result", {}).get("list", [])),
+        }
+    except Exception as e:
+        results["bybit_ls_ratio"] = {"error": str(e)}
+
+    # Test Binance Futures (will likely fail from US)
+    try:
+        resp = requests.get(
+            "https://fapi.binance.com/fapi/v1/fundingRate",
+            params={"symbol": "BTCUSDT", "limit": 1},
+            headers=HEADERS,
+            timeout=10
+        )
+        results["binance_funding"] = {
+            "status": resp.status_code,
+            "response_type": type(resp.json()).__name__,
+            "data_length": len(resp.json()) if isinstance(resp.json(), list) else 0,
+        }
+    except Exception as e:
+        results["binance_funding"] = {"error": str(e)}
+
+    return {"results": results}
+
+
 # ============================================
 # MAINTENANCE
 # ============================================
