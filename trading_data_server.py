@@ -696,6 +696,40 @@ async def debug_derivatives():
     except Exception as e:
         results["binance_funding"] = {"error": str(e)}
 
+    # Test OKX (should work globally)
+    try:
+        resp = requests.get(
+            "https://www.okx.com/api/v5/public/funding-rate",
+            params={"instId": "BTC-USDT-SWAP"},
+            headers=HEADERS,
+            timeout=10
+        )
+        data = resp.json()
+        results["okx_funding"] = {
+            "status": resp.status_code,
+            "code": data.get("code"),
+            "fundingRate": data.get("data", [{}])[0].get("fundingRate") if data.get("data") else None,
+        }
+    except Exception as e:
+        results["okx_funding"] = {"error": str(e)}
+
+    # Test Bitget (should work globally)
+    try:
+        resp = requests.get(
+            "https://api.bitget.com/api/v2/mix/market/current-fund-rate",
+            params={"symbol": "BTCUSDT", "productType": "USDT-FUTURES"},
+            headers=HEADERS,
+            timeout=10
+        )
+        data = resp.json()
+        results["bitget_funding"] = {
+            "status": resp.status_code,
+            "code": data.get("code"),
+            "fundingRate": data.get("data", [{}])[0].get("fundingRate") if data.get("data") else None,
+        }
+    except Exception as e:
+        results["bitget_funding"] = {"error": str(e)}
+
     return {"results": results}
 
 

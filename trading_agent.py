@@ -740,7 +740,49 @@ def fetch_market_data() -> Dict:
     except Exception as e:
         print(f"Bybit tickers error: {e}")
 
-    # Fallback to Binance
+    # Fallback to OKX (works globally)
+    if data.get("funding_rate") is None:
+        try:
+            resp = requests.get(
+                "https://www.okx.com/api/v5/public/funding-rate",
+                params={"instId": "BTC-USDT-SWAP"},
+                headers=HEADERS,
+                timeout=10
+            )
+            okx_data = resp.json()
+            if okx_data.get("code") == "0" and okx_data.get("data"):
+                rate_str = okx_data["data"][0].get("fundingRate")
+                if rate_str:
+                    rate = float(rate_str)
+                    data["funding_rate"] = rate * 100
+                    data["funding_annualized"] = rate * 3 * 365 * 100
+                    data["funding_source"] = "okx"
+                    print(f"OKX funding rate: {rate * 100:.4f}%")
+        except Exception as e:
+            print(f"OKX funding error: {e}")
+
+    # Fallback to Bitget
+    if data.get("funding_rate") is None:
+        try:
+            resp = requests.get(
+                "https://api.bitget.com/api/v2/mix/market/current-fund-rate",
+                params={"symbol": "BTCUSDT", "productType": "USDT-FUTURES"},
+                headers=HEADERS,
+                timeout=10
+            )
+            bitget_data = resp.json()
+            if bitget_data.get("code") == "00000" and bitget_data.get("data"):
+                rate_str = bitget_data["data"][0].get("fundingRate")
+                if rate_str:
+                    rate = float(rate_str)
+                    data["funding_rate"] = rate * 100
+                    data["funding_annualized"] = rate * 3 * 365 * 100
+                    data["funding_source"] = "bitget"
+                    print(f"Bitget funding rate: {rate * 100:.4f}%")
+        except Exception as e:
+            print(f"Bitget funding error: {e}")
+
+    # Last resort: Binance (may be geo-blocked)
     if data.get("funding_rate") is None:
         try:
             resp = requests.get(
@@ -754,6 +796,7 @@ def fetch_market_data() -> Dict:
                 rate = float(funding[0].get("fundingRate", 0))
                 data["funding_rate"] = rate * 100
                 data["funding_annualized"] = rate * 3 * 365 * 100
+                data["funding_source"] = "binance"
         except Exception as e:
             print(f"Binance funding fallback error: {e}")
 
@@ -775,7 +818,45 @@ def fetch_market_data() -> Dict:
         except Exception as e:
             print(f"Bybit OI error: {e}")
 
-    # Fallback to Binance
+    # Fallback to OKX for OI
+    if data.get("open_interest") is None:
+        try:
+            resp = requests.get(
+                "https://www.okx.com/api/v5/public/open-interest",
+                params={"instType": "SWAP", "instId": "BTC-USDT-SWAP"},
+                headers=HEADERS,
+                timeout=10
+            )
+            okx_data = resp.json()
+            if okx_data.get("code") == "0" and okx_data.get("data"):
+                oi = okx_data["data"][0].get("oi")
+                if oi:
+                    data["open_interest"] = float(oi)
+                    data["oi_source"] = "okx"
+                    print(f"OKX OI: {oi}")
+        except Exception as e:
+            print(f"OKX OI error: {e}")
+
+    # Fallback to Bitget for OI
+    if data.get("open_interest") is None:
+        try:
+            resp = requests.get(
+                "https://api.bitget.com/api/v2/mix/market/open-interest",
+                params={"symbol": "BTCUSDT", "productType": "USDT-FUTURES"},
+                headers=HEADERS,
+                timeout=10
+            )
+            bitget_data = resp.json()
+            if bitget_data.get("code") == "00000" and bitget_data.get("data"):
+                oi = bitget_data["data"].get("openInterestList", [{}])[0].get("openInterest")
+                if oi:
+                    data["open_interest"] = float(oi)
+                    data["oi_source"] = "bitget"
+                    print(f"Bitget OI: {oi}")
+        except Exception as e:
+            print(f"Bitget OI error: {e}")
+
+    # Last resort: Binance (may be geo-blocked)
     if data.get("open_interest") is None:
         try:
             resp = requests.get(
@@ -787,6 +868,7 @@ def fetch_market_data() -> Dict:
             oi_data = resp.json()
             if isinstance(oi_data, dict) and "openInterest" in oi_data:
                 data["open_interest"] = float(oi_data.get("openInterest", 0))
+                data["oi_source"] = "binance"
         except Exception as e:
             print(f"Binance OI fallback error: {e}")
 
