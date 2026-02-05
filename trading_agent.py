@@ -890,7 +890,50 @@ def fetch_market_data() -> Dict:
     except Exception as e:
         print(f"Bybit L/S ratio error: {e}")
 
-    # Fallback to Binance
+    # Fallback to OKX Long/Short Ratio
+    if data.get("long_pct") is None:
+        try:
+            resp = requests.get(
+                "https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio",
+                params={"instId": "BTC", "period": "1H"},
+                headers=HEADERS,
+                timeout=10
+            )
+            okx_data = resp.json()
+            if okx_data.get("code") == "0" and okx_data.get("data"):
+                # OKX returns ratio as string, e.g., "1.5" means 1.5 longs per short
+                ratio_str = okx_data["data"][0][1] if len(okx_data["data"][0]) > 1 else None
+                if ratio_str:
+                    ratio = float(ratio_str)
+                    data["long_pct"] = ratio / (1 + ratio) * 100
+                    data["short_pct"] = 100 - data["long_pct"]
+                    data["ls_source"] = "okx"
+                    print(f"OKX L/S ratio: {ratio} -> {data['long_pct']:.1f}% long")
+        except Exception as e:
+            print(f"OKX L/S ratio error: {e}")
+
+    # Fallback to Bitget Long/Short Ratio
+    if data.get("long_pct") is None:
+        try:
+            resp = requests.get(
+                "https://api.bitget.com/api/v2/mix/market/account-long-short",
+                params={"symbol": "BTCUSDT", "productType": "USDT-FUTURES", "period": "1h"},
+                headers=HEADERS,
+                timeout=10
+            )
+            bitget_data = resp.json()
+            if bitget_data.get("code") == "00000" and bitget_data.get("data"):
+                ls_list = bitget_data["data"]
+                if ls_list:
+                    long_ratio = float(ls_list[0].get("longAccountRatio", 0.5))
+                    data["long_pct"] = long_ratio * 100
+                    data["short_pct"] = 100 - data["long_pct"]
+                    data["ls_source"] = "bitget"
+                    print(f"Bitget L/S: {data['long_pct']:.1f}% long")
+        except Exception as e:
+            print(f"Bitget L/S ratio error: {e}")
+
+    # Last resort: Binance (may be geo-blocked)
     if data.get("long_pct") is None:
         try:
             resp = requests.get(
@@ -904,6 +947,7 @@ def fetch_market_data() -> Dict:
                 ratio = float(ls[0].get("longShortRatio", 1))
                 data["long_pct"] = ratio / (1 + ratio) * 100
                 data["short_pct"] = 100 - data["long_pct"]
+                data["ls_source"] = "binance"
         except Exception as e:
             print(f"Binance L/S ratio fallback error: {e}")
 
