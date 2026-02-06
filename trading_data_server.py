@@ -403,6 +403,7 @@ class AgentLogRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    image: Optional[str] = None  # base64 data URL (e.g. "data:image/png;base64,...")
 
 
 @app.post("/api/agent/log")
@@ -500,7 +501,7 @@ async def chat_with_agent(chat: ChatRequest):
     fng_label = market_data.get('fear_greed_label', '')
     long_pct = market_data.get('long_pct')
 
-    current_msg = f"""## LIVE MARKET DATA (just fetched):
+    current_text = f"""## LIVE MARKET DATA (just fetched):
 - **BTC Price**: {fmt(price, "$")}
 - **RSI (14-day)**: {fmt(rsi)} {'(OVERSOLD <30)' if rsi and rsi < 30 else '(OVERBOUGHT >70)' if rsi and rsi > 70 else ''}
 - **200 MA**: {fmt(ma_200, "$")} - Price is {'ABOVE ✓' if above_200ma else 'BELOW ✗'} (PTJ Rule)
@@ -511,7 +512,27 @@ async def chat_with_agent(chat: ChatRequest):
 
 User question: {chat.message}"""
 
-    messages.append({"role": "user", "content": current_msg})
+    # Build user message content — multimodal if image attached, plain text otherwise
+    if chat.image:
+        # Parse data URL: "data:image/png;base64,iVBOR..."
+        content_blocks = []
+        try:
+            header, b64_data = chat.image.split(",", 1)
+            media_type = header.split(":")[1].split(";")[0]  # e.g. "image/png"
+            content_blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": b64_data
+                }
+            })
+        except (ValueError, IndexError) as e:
+            print(f"Image parse error: {e}")
+        content_blocks.append({"type": "text", "text": current_text})
+        messages.append({"role": "user", "content": content_blocks})
+    else:
+        messages.append({"role": "user", "content": current_text})
 
     try:
         resp = req.post(
