@@ -512,7 +512,7 @@ class TradingDatabase:
             return cursor.lastrowid
 
     def get_agent_logs(self, limit: int = 20, log_type: str = None,
-                       hours: int = None) -> List[Dict]:
+                       hours: int = None, offset: int = 0) -> List[Dict]:
         """Get recent agent logs."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -529,8 +529,9 @@ class TradingDatabase:
                 query += " AND created_at > ?"
                 params.append(since.isoformat())
 
-            query += " ORDER BY created_at DESC LIMIT ?"
+            query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
             params.append(limit)
+            params.append(offset)
 
             cursor.execute(query, params)
 

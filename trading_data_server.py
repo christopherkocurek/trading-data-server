@@ -426,10 +426,11 @@ async def post_agent_log(log: AgentLogRequest):
 async def get_agent_logs(
     limit: int = Query(default=20, ge=1, le=100),
     log_type: str = Query(default=None),
-    hours: int = Query(default=None, ge=1, le=168)
+    hours: int = Query(default=None, ge=1, le=168),
+    offset: int = Query(default=0, ge=0)
 ):
     """Get agent analysis logs."""
-    logs = db.get_agent_logs(limit=limit, log_type=log_type, hours=hours)
+    logs = db.get_agent_logs(limit=limit, log_type=log_type, hours=hours, offset=offset)
     return {"logs": logs}
 
 
