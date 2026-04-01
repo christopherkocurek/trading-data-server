@@ -7,3 +7,7 @@ healthcheckPath = "/health"
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
+
+[[mounts]]
+source = "trading_data"
+destination = "/data"

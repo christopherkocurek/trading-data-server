@@ -14,7 +14,8 @@ class TradingDatabase:
     """SQLite database for trading data persistence."""
 
     def __init__(self, db_path: str = None):
-        self.db_path = db_path or os.getenv("DATABASE_PATH", "trading_data.db")
+        default_path = "/data/trading_data.db" if os.path.isdir("/data") else "trading_data.db"
+        self.db_path = db_path or os.getenv("DATABASE_PATH", default_path)
         self._init_db()
 
     @contextmanager
