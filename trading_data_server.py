@@ -40,7 +40,7 @@ def run_trading_agent():
         print(f"Agent error: {e}")
 
 def start_scheduler():
-    """Start the APScheduler for hourly agent runs."""
+    """Start the APScheduler for 8-hourly agent runs."""
     global scheduler
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
@@ -48,12 +48,12 @@ def start_scheduler():
 
         scheduler = BackgroundScheduler()
 
-        # Run at the top of every hour
+        # Run every 8 hours at 00:00, 08:00, 16:00 UTC
         scheduler.add_job(
             run_trading_agent,
-            CronTrigger(minute=0),  # Every hour at :00
+            CronTrigger(hour='0,8,16', minute=0),
             id='trading_agent',
-            name='Hourly Trading Analysis',
+            name='8-Hourly Trading Analysis',
             replace_existing=True
         )
 
@@ -66,7 +66,7 @@ def start_scheduler():
         )
 
         scheduler.start()
-        print("Scheduler started - Trading agent will run every hour at :00")
+        print("Scheduler started - Trading agent will run every 8 hours at 00:00, 08:00, 16:00 UTC")
     except ImportError:
         print("APScheduler not installed - agent scheduling disabled")
     except Exception as e:
